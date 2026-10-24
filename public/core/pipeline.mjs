@@ -4,7 +4,7 @@
 //   scanPage(url, { onStatus }) → { finalUrl, status, title, candidates, notes }   // 2단계
 //   capture(url, { onStatus }) → { candidates, title, userAgent, finalUrl, segmentsSeen, cookiesFile }  // 3단계
 //   checkDrm(url, type, headers) → 'Widevine' | ... | null
-//   baseAccess() → { cookiesBrowser?, cookiesFile? }
+//   baseAccess(url) → Promise<{ cookiesBrowser?, cookiesFile? }>  // 로그인 상태(쿠키) 등 기본 접근 정보
 //   userAgent: 2단계 요청에 쓴 User-Agent
 //   sites: createSites() 결과
 //   emit(type, data)  // 'analysis', 'sites'
@@ -57,7 +57,7 @@ async function probeCandidates(deps, candidates, { stage, access, title, onStatu
 // 각 단계: 성공하면 Item 배열, 아니면 null
 async function stageYtdlp(deps, a, setStage, errors) {
   setStage(1, 'running', 'yt-dlp로 분석 중');
-  const access = deps.baseAccess();
+  const access = (await deps.baseAccess(a.url));
   const r = await deps.extract(a.url, { stage: 1, access });
   if (r.ok) {
     for (const it of r.items) it._access = access;
@@ -83,7 +83,7 @@ async function stageScan(deps, a, setStage, errors) {
     setStage(2, 'running', `후보 ${page.candidates.length}개 확인 중${found}`);
     const items = await probeCandidates(deps, page.candidates, {
       stage: 2, title: page.title,
-      access: { ...deps.baseAccess(), referer: page.finalUrl, userAgent: deps.userAgent },
+      access: { ...(await deps.baseAccess(a.url)), referer: page.finalUrl, userAgent: deps.userAgent },
       onStatus: (m) => setStage(2, 'running', m),
     });
     if (items.length) {
@@ -109,7 +109,7 @@ async function stageBrowser(deps, a, setStage, errors) {
     return null;
   }
   setStage(3, 'running', `미디어 요청 ${cap.candidates.length}개 확인 중`);
-  const access = { userAgent: cap.userAgent, referer: cap.finalUrl, ...(cap.cookiesFile ? { cookiesFile: cap.cookiesFile } : deps.baseAccess()) };
+  const access = { userAgent: cap.userAgent, referer: cap.finalUrl, ...(cap.cookiesFile ? { cookiesFile: cap.cookiesFile } : (await deps.baseAccess(a.url))) };
   const items = await probeCandidates(deps, cap.candidates, { stage: 3, title: cap.title, access, onStatus: (m) => setStage(3, 'running', m) });
   if (items.length) {
     setStage(3, 'success', `미디어 요청 ${cap.candidates.length}개 중 ${items.length}개 항목 확인`);

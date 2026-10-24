@@ -10,7 +10,7 @@ import { extract, startDownload } from './lib/ytdlp.mjs';
 import { scanPage } from './lib/scan.mjs';
 import { sites } from './lib/sites.mjs';
 import { newAnalysis, runAnalysis } from './public/core/pipeline.mjs';
-import { capture, openLoginBrowser, TMP_DIR } from './lib/browser.mjs';
+import { capture, openLoginBrowser, profileCookies, TMP_DIR } from './lib/browser.mjs';
 import { checkDrm } from './lib/drm.mjs';
 
 const PORT = Number(process.env.PORT) || 5280;
@@ -79,7 +79,13 @@ function withBrowserLock(fn) {
   return next;
 }
 
-function baseAccess() {
+// 기본 접근 정보: "로그인 프로필 사용"이면 로그인용 브라우저에서 로그인한 쿠키(YouTube 성인 인증·유료 영상 등)를,
+// 아니면 설정의 쿠키 브라우저를 쓴다
+async function baseAccess(url) {
+  if (state.settings.useLoginProfile && url) {
+    const cookiesFile = await withBrowserLock(() => profileCookies(url));
+    if (cookiesFile) return { cookiesFile };
+  }
   return state.settings.cookiesBrowser ? { cookiesBrowser: state.settings.cookiesBrowser } : {};
 }
 
@@ -153,7 +159,7 @@ function createJob({ analysisId, itemId, format, height }) {
     id: newId('j'), analysisId, itemId, title: item.title, format: label,
     status: 'queued', percent: null, speed: null, eta: null, downloaded: null, total: null,
     file: null, error: null, log: [], createdAt: Date.now(),
-    _url: item.url, _access: item._access || baseAccess(), _title: item.stage > 1 ? item.title : null,
+    _url: item.url, _access: item._access || {}, _title: item.stage > 1 ? item.title : null,
     _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind },
   };
   state.jobs.unshift(job);
@@ -360,6 +366,9 @@ async function cleanupTmp() {
     for (const f of await fsp.readdir(TMP_DIR)) await fsp.rm(path.join(TMP_DIR, f), { force: true });
   } catch {}
 }
+
+// 백그라운드 작업(브라우저 제어 등)의 처리되지 않은 오류로 서버 전체가 꺼지지 않게 기록만 한다
+process.on('unhandledRejection', (e) => console.error('[unhandled]', e?.message || e));
 
 await cleanupTmp();
 server.listen(PORT, '127.0.0.1', async () => {

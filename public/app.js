@@ -194,7 +194,7 @@ $('#shutdown').addEventListener('click', () => run('shutdown', async () => {
   await request('/api/shutdown');
   message('프로그램을 종료했습니다. 이 탭은 닫아도 됩니다.');
 }));
-$('#login-browser').addEventListener('click', () => run('login', async () => { const first = $('#urls').value.split(/\r?\n/).map(s => s.trim()).find(Boolean); if (!first) throw new Error('상단에 로그인할 페이지 URL을 입력하세요.'); await request('/api/login-browser', { url: validUrl(first) }); message('로그인용 브라우저를 열었습니다.'); }));
+$('#login-browser').addEventListener('click', () => run('login', async () => { const first = $('#urls').value.split(/\r?\n/).map(s => s.trim()).find(Boolean); const target = first ? validUrl(first) : 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F'; await request('/api/login-browser', { url: target }); message(first ? '로그인용 브라우저를 열었습니다. 로그인한 뒤 창을 닫으세요.' : 'YouTube 로그인 창을 열었습니다. 로그인한 뒤 창을 닫으면 성인 인증·멤버십 영상도 받을 수 있습니다.'); }));
 $('#settings-form').addEventListener('input', () => { settingsDirty = true; });
 $('#settings-form').addEventListener('change', () => { settingsDirty = true; });
 $('#settings-form').addEventListener('submit', e => { e.preventDefault(); run('settings', async () => {

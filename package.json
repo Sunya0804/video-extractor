@@ -1,7 +1,7 @@
 {
   "name": "video-extractor",
   "productName": "Video Extractor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "개인용 영상 추출기: yt-dlp → 페이지 스캔 → 헤드리스 브라우저 3단계 자동 추출",
   "type": "module",
