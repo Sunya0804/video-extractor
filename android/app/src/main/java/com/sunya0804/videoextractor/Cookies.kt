@@ -13,7 +13,9 @@ object Cookies {
     fun write(dir: File, urls: List<String>): String? {
         val manager = CookieManager.getInstance()
         val lines = LinkedHashSet<String>()
-        for (url in urls) {
+        for (raw in urls) {
+            // youtu.be 짧은 링크의 로그인 쿠키는 youtube.com에 있다
+            val url = if (Uri.parse(raw).host == "youtu.be") "https://www.youtube.com/" else raw
             val uri = Uri.parse(url)
             val host = uri.host ?: continue
             val secure = if (uri.scheme == "https") "TRUE" else "FALSE"

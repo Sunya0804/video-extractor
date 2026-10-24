@@ -26,7 +26,7 @@ const state = {
     downloadDir: path.join(os.homedir(), 'Downloads', 'VideoExtractor'),
     browserVisible: false,
     cookiesBrowser: '',
-    useLoginProfile: false,
+    useLoginProfile: true,
     concurrentFragments: 4,
   },
   analyses: [], // 최신이 앞
@@ -329,6 +329,12 @@ async function handleApi(req, res, url, remote = false) {
     let target = null;
     try { const u = new URL(String(body.url || '')); if (/^https?:$/.test(u.protocol)) target = u.href; } catch {}
     await openLoginBrowser(target);
+    // 로그인 창을 연 것 자체가 그 로그인 상태를 쓰겠다는 뜻이라, 꺼져 있으면 켠다
+    if (!state.settings.useLoginProfile) {
+      state.settings.useLoginProfile = true;
+      await saveSettings();
+      emit('settings', state.settings);
+    }
     return send(res, 200, { ok: true });
   }
   if (m === 'GET' && p === '/api/sites') return send(res, 200, { sites: sites.list() });
