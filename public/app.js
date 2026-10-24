@@ -24,7 +24,14 @@ function message(text, error = false) {
 // 깃허브 io 등 다른 주소에서 열렸으면 같은 PC의 로컬 서버(Video Extractor)에 연결한다
 const isAndroid = typeof window.VXNative !== 'undefined';
 const isLocal = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
-const API_BASE = isAndroid || isLocal || mockMode ? '' : (new URLSearchParams(location.search).get('server') || localStorage.getItem('vx.server') || 'http://127.0.0.1:5280').replace(/\/+$/, '');
+// 연결 대상은 이 PC(루프백 주소)만 허용한다. 링크의 ?server= 로 다른 서버에 붙게 만들 수 없게
+function loopbackServer(value) {
+  try {
+    const u = new URL(value);
+    return u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) ? u.origin : null;
+  } catch { return null; }
+}
+const API_BASE = isAndroid || isLocal || mockMode ? '' : (loopbackServer(new URLSearchParams(location.search).get('server')) || loopbackServer(localStorage.getItem('vx.server')) || 'http://127.0.0.1:5280');
 async function request(path, body, method = 'POST') {
   if (transport) return transport.request(path, body, method);
   const response = await fetch(API_BASE + path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });

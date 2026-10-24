@@ -200,14 +200,34 @@ async function serveStatic(req, res, pathname) {
 }
 
 const SETTING_RULES = {
-  downloadDir: (v) => typeof v === 'string' && path.isAbsolute(v.trim()) ? v.trim() : undefined,
+  downloadDir: (v) => safeDownloadDir(v),
   browserVisible: (v) => typeof v === 'boolean' ? v : undefined,
   cookiesBrowser: (v) => ['', 'edge', 'chrome', 'firefox'].includes(v) ? v : undefined,
   useLoginProfile: (v) => typeof v === 'boolean' ? v : undefined,
   concurrentFragments: (v) => Number.isInteger(v) && v >= 1 && v <= 16 ? v : undefined,
 };
 
-async function handleApi(req, res, url) {
+// 다운로드 폴더: 절대 경로만, UNC·장치 경로(\\server, \\?\)와 시작프로그램 폴더는 거부
+function safeDownloadDir(v) {
+  if (typeof v !== 'string') return undefined;
+  const raw = v.trim();
+  // Windows는 "C:\..." 처럼 드라이브 문자로 시작하는 경로만(\\server, \\?\, \폴더 같은 형태 거부)
+  if (process.platform === 'win32' ? !/^[A-Za-z]:[\\/]/.test(raw) : !path.isAbsolute(raw)) return undefined;
+  const dir = path.resolve(raw);
+  if (/^[\\/]{2}/.test(dir)) return undefined;
+  if (/[\\/]Start Menu[\\/]Programs[\\/]Startup([\\/]|$)/i.test(dir)) return undefined;
+  return dir;
+}
+
+// 폴더를 만들고 실제 디렉터리인지 확인한 뒤에만 탐색기로 연다
+async function ensureDir(dir) {
+  await fsp.mkdir(dir, { recursive: true });
+  if (!(await fsp.stat(dir)).isDirectory()) throw Object.assign(new Error('다운로드 폴더가 디렉터리가 아닙니다'), { status: 400 });
+  return dir;
+}
+
+// remote: 깃허브 io 화면에서 온 요청(같은 PC에서 연 것이라도 설정의 다운로드 폴더는 바꿀 수 없음)
+async function handleApi(req, res, url, remote = false) {
   const p = url.pathname;
   const m = req.method;
   if (m === 'GET' && p === '/api/state') return send(res, 200, snapshot());
@@ -248,7 +268,7 @@ async function handleApi(req, res, url) {
     }
     if (m === 'POST' && jm[2] === 'reveal') {
       if (job.file && fs.existsSync(job.file)) openPath(job.file, { select: true });
-      else openPath(state.settings.downloadDir);
+      else openPath(await ensureDir(state.settings.downloadDir));
       return send(res, 200, { ok: true });
     }
     if (m === 'DELETE' && !jm[2]) {
@@ -260,6 +280,14 @@ async function handleApi(req, res, url) {
   }
   if (m === 'POST' && p === '/api/settings') {
     const body = await readJson(req);
+    if (remote && 'downloadDir' in body && body.downloadDir !== state.settings.downloadDir) {
+      return send(res, 403, { error: '다운로드 폴더는 PC에서 연 화면(127.0.0.1)에서만 바꿀 수 있습니다' });
+    }
+    if ('downloadDir' in body && body.downloadDir !== state.settings.downloadDir) {
+      const dir = safeDownloadDir(body.downloadDir);
+      if (!dir) return send(res, 400, { error: '다운로드 폴더 경로가 올바르지 않습니다(절대 경로, 네트워크·시작프로그램 폴더 불가)' });
+      try { await ensureDir(dir); } catch (e) { return send(res, 400, { error: `다운로드 폴더를 만들 수 없습니다: ${e.message}` }); }
+    }
     for (const [k, rule] of Object.entries(SETTING_RULES)) {
       if (!(k in body)) continue;
       const v = rule(body[k]);
@@ -294,7 +322,7 @@ async function handleApi(req, res, url) {
   }
   if (m === 'POST' && p === '/api/open-folder') {
     await fsp.mkdir(state.settings.downloadDir, { recursive: true });
-    openPath(state.settings.downloadDir);
+    openPath(await ensureDir(state.settings.downloadDir));
     return send(res, 200, { ok: true });
   }
   send(res, 404, { error: '없는 API입니다' });
@@ -319,7 +347,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method !== 'GET' && origin && !remoteAllowed && !ALLOWED_HOSTS.has(origin.replace(/^https?:\/\//, ''))) return send(res, 403, { error: 'origin not allowed' });
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
-    if (url.pathname.startsWith('/api/')) await handleApi(req, res, url);
+    if (url.pathname.startsWith('/api/')) await handleApi(req, res, url, remoteAllowed);
     else if (req.method === 'GET') await serveStatic(req, res, url.pathname);
     else send(res, 405, { error: 'method not allowed' });
   } catch (e) {
