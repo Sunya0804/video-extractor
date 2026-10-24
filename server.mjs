@@ -388,6 +388,9 @@ async function cleanupTmp() {
   } catch {}
 }
 
+// 백그라운드 작업(브라우저 제어 등)의 처리되지 않은 오류로 서버 전체가 꺼지지 않게 기록만 한다
+process.on('unhandledRejection', (e) => console.error('[unhandled]', e?.message || e));
+
 await cleanupTmp();
 export const ready = new Promise((resolve, reject) => {
 server.once('error', reject);
