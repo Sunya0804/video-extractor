@@ -10,6 +10,10 @@ export function newId(prefix) {
 export function errorLine(stderr) {
   const lines = String(stderr || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const err = lines.filter((l) => l.startsWith('ERROR:'));
+  // 쿠키(로그인)가 필요한 영상: yt-dlp 안내 대신 우리 앱의 로그인 방법을 알려 준다
+  if (err.some((l) => /Sign in to confirm|--cookies-from-browser or --cookies|members[- ]only|join this channel/i.test(l))) {
+    return '로그인이 필요한 영상입니다(성인 인증·멤버십 등). 설정의 [로그인용 브라우저 열기]로 YouTube(Google)에 로그인한 뒤 그 창을 닫고 다시 분석하세요.';
+  }
   return (err.length ? err[err.length - 1] : lines[lines.length - 1] || '알 수 없는 오류').replace(/^ERROR:\s*/, '').slice(0, 400);
 }
 
