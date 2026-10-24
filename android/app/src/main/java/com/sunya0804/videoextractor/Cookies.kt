@@ -6,12 +6,8 @@ import java.io.File
 
 /** CookieManager 쿠키를 yt-dlp가 읽는 Netscape 쿠키 파일로 쓴다. */
 object Cookies {
-    /** www.youtube.com → youtube.com, news.example.co.kr → example.co.kr (대략적인 등록 도메인) */
-    private fun siteOf(host: String): String {
-        val parts = host.trimStart('.').split('.')
-        val n = if (parts.size > 2 && parts[parts.size - 2] in setOf("co", "com", "net", "or", "ne", "go", "ac", "org")) 3 else 2
-        return parts.takeLast(n).joinToString(".")
-    }
+    /** 쿠키를 상위 도메인으로 넓혀 써도 되는 사이트(로그인 쿠키가 상위 도메인에 걸리는 곳). 그 외는 넓히지 않는다 */
+    private val WIDEN = listOf("youtube.com", "google.com")
 
     /** 쿠키가 하나도 없으면 null. */
     fun write(dir: File, urls: List<String>): String? {
@@ -21,14 +17,17 @@ object Cookies {
             val uri = Uri.parse(url)
             val host = uri.host ?: continue
             val secure = if (uri.scheme == "https") "TRUE" else "FALSE"
-            // CookieManager는 이름=값만 준다. YouTube 로그인 쿠키(SAPISID, LOGIN_INFO 등)는 .youtube.com 에 걸려 있고
-            // yt-dlp는 youtube.com의 여러 하위 도메인으로 요청하므로, 상위 도메인(.youtube.com)·하위 도메인 포함(TRUE)으로 쓴다.
-            val domain = "." + siteOf(host)
+            // CookieManager는 이름=값만 준다(어느 도메인의 쿠키인지 모름). 기본은 요청한 호스트에만(하위 도메인 FALSE).
+            // YouTube·Google 로그인 쿠키(SAPISID, LOGIN_INFO 등)는 .youtube.com/.google.com 에 걸려 있고 yt-dlp가 여러
+            // 하위 도메인으로 요청하므로, 이 두 사이트만 상위 도메인·하위 도메인 포함(TRUE)으로 넓힌다.
+            val wide = WIDEN.firstOrNull { host == it || host.endsWith(".$it") }
+            val domain = if (wide != null) ".$wide" else host
+            val sub = if (wide != null) "TRUE" else "FALSE"
             val header = manager.getCookie(url) ?: continue
             for (pair in header.split(";")) {
                 val eq = pair.indexOf('=')
                 if (eq <= 0) continue
-                lines += listOf(domain, "TRUE", "/", secure, "0", pair.substring(0, eq).trim(), pair.substring(eq + 1).trim()).joinToString("\t")
+                lines += listOf(domain, sub, "/", secure, "0", pair.substring(0, eq).trim(), pair.substring(eq + 1).trim()).joinToString("\t")
             }
         }
         if (lines.isEmpty()) return null
