@@ -42,6 +42,9 @@ class LoginActivity : Activity() {
         web = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            // Google은 UA에 "; wv"(WebView 표시)가 있으면 로그인을 막는 경우가 많다. 사용자의 본인 계정 로그인 창이므로
+            // 같은 엔진의 일반 Chrome 모바일 UA로 보여 준다(Version/4.0, wv 표시만 제거)
+            settings.userAgentString = settings.userAgentString.replace("; wv", "").replace(Regex("Version/\\d+\\.\\d+ "), "")
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                     address.text = url
@@ -66,7 +69,10 @@ class LoginActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
         }
-        web.loadUrl(intent.getStringExtra("url") ?: "about:blank")
+        // 주소 없이 열면 YouTube(구글) 로그인 화면으로
+        val start = intent.getStringExtra("url")?.takeIf { it.startsWith("http") }
+            ?: "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F"
+        web.loadUrl(start)
     }
 
     private fun goBack() {

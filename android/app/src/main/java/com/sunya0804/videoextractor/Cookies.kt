@@ -6,6 +6,13 @@ import java.io.File
 
 /** CookieManager 쿠키를 yt-dlp가 읽는 Netscape 쿠키 파일로 쓴다. */
 object Cookies {
+    /** www.youtube.com → youtube.com, news.example.co.kr → example.co.kr (대략적인 등록 도메인) */
+    private fun siteOf(host: String): String {
+        val parts = host.trimStart('.').split('.')
+        val n = if (parts.size > 2 && parts[parts.size - 2] in setOf("co", "com", "net", "or", "ne", "go", "ac", "org")) 3 else 2
+        return parts.takeLast(n).joinToString(".")
+    }
+
     /** 쿠키가 하나도 없으면 null. */
     fun write(dir: File, urls: List<String>): String? {
         val manager = CookieManager.getInstance()
@@ -14,12 +21,14 @@ object Cookies {
             val uri = Uri.parse(url)
             val host = uri.host ?: continue
             val secure = if (uri.scheme == "https") "TRUE" else "FALSE"
-            // shortcut: CookieManager는 이름=값만 주므로 도메인은 요청한 호스트, 경로는 /, 만료 0(세션)으로 쓴다.
+            // CookieManager는 이름=값만 준다. YouTube 로그인 쿠키(SAPISID, LOGIN_INFO 등)는 .youtube.com 에 걸려 있고
+            // yt-dlp는 youtube.com의 여러 하위 도메인으로 요청하므로, 상위 도메인(.youtube.com)·하위 도메인 포함(TRUE)으로 쓴다.
+            val domain = "." + siteOf(host)
             val header = manager.getCookie(url) ?: continue
             for (pair in header.split(";")) {
                 val eq = pair.indexOf('=')
                 if (eq <= 0) continue
-                lines += listOf(host, "FALSE", "/", secure, "0", pair.substring(0, eq).trim(), pair.substring(eq + 1).trim()).joinToString("\t")
+                lines += listOf(domain, "TRUE", "/", secure, "0", pair.substring(0, eq).trim(), pair.substring(eq + 1).trim()).joinToString("\t")
             }
         }
         if (lines.isEmpty()) return null
