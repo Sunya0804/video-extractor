@@ -34,7 +34,7 @@ JS → 네이티브: `VXNative.call(callId: String, method: String, argsJson: St
 | `mediaScan` | `{ path }` | `{ ok }` — MediaScannerConnection.scanFile |
 | `openFile` | `{ path }` | `{ ok }` — FileProvider + ACTION_VIEW |
 | `openFolder` | `{}` | `{ ok }` — 다운로드 목록(DownloadManager.ACTION_VIEW_DOWNLOADS) 열기 |
-| `openUrl` | `{ url }` | `{ ok }` — 외부 브라우저(앱 업데이트 APK 받기 등) |
+| `openUrl` | `{ url }` | `{ ok }` — 외부 브라우저 |
 | `keepAlive` | `{ active: boolean, text }` | `{ ok }` — 다운로드 중 포그라운드 서비스(알림) 시작/중지 |
 
 ### capture (3단계)
@@ -52,3 +52,10 @@ JS → 네이티브: `VXNative.call(callId: String, method: String, argsJson: St
 ## 기타
 - yt-dlp는 앱 시작 시 하루 1회 JS가 `updateYtdlp` 호출(배포 라이브러리의 yt-dlp가 오래되면 YouTube가 실패하므로).
 - 패키지: `com.sunya0804.videoextractor`, minSdk 26, compile/target 36, abiFilters `arm64-v8a`.
+
+## 앱 자동 업데이트
+
+- `appUpdate { action: 'check' | 'install' }` → `{ status, latest, current, progress }`. check는 백그라운드 확인을 시작하고 현재 상태를 즉시 반환합니다. install은 준비된 APK를 설치하며 파일이 없으면 확인부터 시작합니다.
+- 네이티브 이벤트 `appUpdate { status, progress, latest, current }`: 확인 중, 새 버전 받는 중(0~100%), 설치 준비됨, 최신 버전, 설치 확인 대기 또는 오류를 전달합니다. 도구 패널의 app 항목 note에 표시합니다.
+- 시작 시 및 마지막 확인에서 6시간이 지난 onResume에 GitHub releases/latest를 확인합니다. 더 높은 정식 버전의 APK를 cacheDir/updates에 임시 다운로드하고 크기를 검증한 뒤 설치 준비 상태로 전환합니다.
+- REQUEST_INSTALL_PACKAGES 권한으로 이 출처의 앱 설치 허용 설정을 안내하고 돌아오면 설치를 재개합니다. PackageInstaller 세션으로 APK를 전달하며 MainActivity의 설치 결과 Intent로 시스템 확인 화면·취소·실패를 처리합니다. 서명·패키지 검증은 Android 설치 관리자가 수행합니다.

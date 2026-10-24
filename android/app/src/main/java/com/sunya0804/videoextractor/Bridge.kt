@@ -54,6 +54,8 @@ class Bridge(private val activity: MainActivity) {
         }
     }
 
+    fun appUpdate(data: JSONObject) = event("appUpdate", data)
+
     fun shutdown() = pool.shutdownNow()
 
     private fun event(type: String, data: JSONObject) =
@@ -65,6 +67,11 @@ class Bridge(private val activity: MainActivity) {
 
     private fun run(method: String, args: JSONObject): JSONObject = when (method) {
         "init" -> init()
+        "appUpdate" -> when (args.optString("action")) {
+            "check" -> activity.updater.check()
+            "install" -> activity.updater.install()
+            else -> throw IllegalArgumentException("unknown appUpdate action")
+        }
         "updateYtdlp" -> {
             engineReady
             val channel = if (args.optString("channel") == "nightly") YoutubeDL.UpdateChannel.NIGHTLY else YoutubeDL.UpdateChannel.STABLE
@@ -117,6 +124,7 @@ class Bridge(private val activity: MainActivity) {
         downloadDir().mkdirs() // 28 이하는 권한을 받은 뒤(첫 다운로드) 다시 만든다.
         return JSONObject()
             .put("appVersion", BuildConfig.VERSION_NAME)
+            .put("appUpdate", activity.updater.snapshot())
             .put("ytdlpVersion", YoutubeDL.getInstance().version(ctx) ?: JSONObject.NULL)
             .put("pluginDir", plugins.absolutePath)
             .put("downloadDir", downloadDir().absolutePath)

@@ -8,7 +8,6 @@ import { newAnalysis, runAnalysis } from './core/pipeline.mjs';
 import { PLAY_SCRIPT } from './core/play.mjs';
 
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
-const REPO = 'Sunya0804/video-extractor';
 const MAX_ACTIVE_JOBS = 2;
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -28,6 +27,7 @@ export function createAndroid(receive, connection) {
     reject(id, message) { const p = pending.get(id); if (!p) return; pending.delete(id); p.reject(new Error(message)); },
     event(type, json) {
       let data; try { data = JSON.parse(json); } catch { return; }
+      if (type === 'appUpdate') { appUpdate = data; buildTools(); emit('tools', { tools: state.tools, toolsBusy: state.toolsBusy }); }
       if (type === 'ytdlpLine') lineListeners.get(data.jobId)?.(data.line);
     },
   };
@@ -166,48 +166,42 @@ export function createAndroid(receive, connection) {
   }
 
   // ---------- 도구(yt-dlp 업데이트, 앱 업데이트) ----------
-  let latestApp = null;
+  let appUpdate = { status: '앱 버전', latest: '', progress: 0 };
   function buildTools() {
     state.tools = [
       { name: 'yt-dlp', installed: true, version: info?.ytdlpVersion || null, path: null, source: 'app', required: true, note: '추출 엔진. "설치/업데이트"로 최신 버전 받기' },
       { name: 'ffmpeg', installed: true, version: '앱 내장', path: null, source: 'app', required: true, note: '영상·음성 합치기, MP3 변환' },
       { name: 'quickjs', installed: true, version: '앱 내장', path: null, source: 'app', required: true, note: 'YouTube 서명 해독용 JavaScript 런타임' },
       { name: 'browser', installed: true, version: 'Android WebView', path: null, source: 'system', required: false, note: '3단계(앱 내장 브라우저)' },
-      { name: 'app', installed: !latestApp, version: info?.appVersion || null, path: null, source: 'app', required: false,
-        note: latestApp ? `새 버전 ${latestApp.tag} — "설치/업데이트"를 누르면 APK를 받습니다` : '앱 버전' },
+      { name: 'app', installed: !appUpdate.latest, version: info?.appVersion || null, path: null, source: 'app', required: false,
+        note: appUpdate.status === '새 버전 받는 중' ? `새 버전 받는 중 ${appUpdate.progress || 0}%` : appUpdate.status },
     ];
   }
   async function runInstall(names) {
     if (state.toolsBusy) return;
-    if (latestApp && (!names || names.includes('app'))) { toolLog(`앱 새 버전 ${latestApp.tag} 받기: ${latestApp.url}`); call('openUrl', { url: latestApp.url }).catch(() => {}); }
     state.toolsBusy = true;
     emit('tools', { tools: state.tools, toolsBusy: true });
     try {
+      if (!names || names.includes('app')) await call('appUpdate', { action: 'install' });
+      if (names && !names.includes('yt-dlp')) return;
       toolLog('yt-dlp 업데이트 확인 중');
       const r = await call('updateYtdlp', { channel: 'stable' });
       info.ytdlpVersion = r.version || info.ytdlpVersion;
       save('vx.ytdlpCheckedAt', Date.now());
       toolLog(r.status === 'DONE' ? `yt-dlp ${info.ytdlpVersion}로 업데이트했습니다` : `yt-dlp ${info.ytdlpVersion} — 최신입니다`);
     } catch (e) { toolLog(`오류: ${e.message}`); }
-    state.toolsBusy = false;
-    buildTools();
-    emit('tools', { tools: state.tools, toolsBusy: false });
+    finally {
+      state.toolsBusy = false;
+      buildTools();
+      emit('tools', { tools: state.tools, toolsBusy: false });
+    }
   }
   async function checkAppUpdate() {
     try {
-      const r = await call('fetch', { url: `https://api.github.com/repos/${REPO}/releases/latest`, headers: { Accept: 'application/vnd.github+json' }, maxBytes: 512 * 1024 });
-      if (r.status !== 200) return;
-      const rel = JSON.parse(r.body);
-      const apk = (rel.assets || []).find((a) => a.name.endsWith('.apk'));
-      const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
-      const tag = String(rel.tag_name || '').replace(/^v/, '');
-      if (apk && info?.appVersion && newer(tag, info.appVersion)) {
-        latestApp = { tag, url: apk.browser_download_url };
-        buildTools();
-        emit('tools', { tools: state.tools, toolsBusy: state.toolsBusy });
-        toolLog(`앱 새 버전 ${tag}이 있습니다`);
-      }
-    } catch {}
+      appUpdate = await call('appUpdate', { action: 'check' });
+      buildTools();
+      emit('tools', { tools: state.tools, toolsBusy: state.toolsBusy });
+    } catch (e) { toolLog(`앱 업데이트 확인 실패: ${e.message}`); }
   }
 
   // ---------- API 라우터(docs/API.md와 같은 모양) ----------
@@ -269,6 +263,7 @@ export function createAndroid(receive, connection) {
   (async () => {
     try {
       info = await call('init');
+      appUpdate = info.appUpdate || appUpdate;
       state.settings.downloadDir = info.downloadDir;
       // 앱을 다시 켜면 진행 중이던 작업은 끊겨 있다
       for (const j of state.jobs) if (!['done', 'failed', 'cancelled'].includes(j.status)) Object.assign(j, { status: 'failed', error: '앱이 종료되어 중단됨' });
