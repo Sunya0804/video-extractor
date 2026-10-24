@@ -1,0 +1,8 @@
+bin/
+data/
+node_modules/
+dist/
+# 내부 작업 메모(로컬 경로·세션 정보 포함)
+docs/tasks/
+docs/dochi-bug-report.md
+*.stackdump

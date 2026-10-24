@@ -1,0 +1,10 @@
+.gradle/
+build/
+app/build/
+local.properties
+# 빌드 때마다 ../public, ../plugins에서 복사된다.
+app/src/main/assets/www/
+app/src/main/assets/plugins/
+android-signing.properties
+*.jks
+*.keystore

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Video Extractor · 영상 추출</title>
+  <link rel="icon" href="./icon.png">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="./"><span class="brand-mark">↓</span>Video Extractor</a><span class="tag">영상 추출 워크스페이스</span><span id="connection" class="chip pending" role="status">연결 중</span><button id="shutdown" class="small" type="button" title="백그라운드 서버를 끕니다. 바탕화면 바로가기로 다시 켤 수 있습니다.">프로그램 종료</button></header>
+  <main>
+    <div id="mock-banner" class="notice" hidden>미리보기 모드 · 가상 데이터로 동작합니다. 실제 파일은 다운로드하지 않습니다.</div>
+    <div id="required-banner" class="notice warning" hidden><span id="required-message"></span><button id="install-required" class="primary">필수 도구 설치</button></div>
+    <section class="composer panel">
+      <div class="eyebrow">새 분석</div><h1>링크에서 영상을 찾아보세요.</h1>
+      <form id="analyze-form"><label class="sr-only" for="urls">분석할 URL</label><div class="input-row"><textarea id="urls" rows="2" placeholder="영상 또는 페이지 URL을 붙여넣으세요" required spellcheck="false"></textarea><button class="primary" id="analyze-button" type="submit">분석 <span aria-hidden="true">↗</span></button></div><p class="hint">여러 URL은 줄바꿈으로 구분 · Enter 분석 · Shift + Enter 줄바꿈</p></form>
+    </section>
+    <div id="feedback" role="status" aria-live="polite" hidden></div>
+    <div class="workspace">
+      <div class="main-column">
+        <section aria-labelledby="analyses-title"><div class="section-head"><h2 id="analyses-title">분석 결과 <span id="analysis-count" class="count">0</span></h2><span class="hint">3단계 자동 추출</span></div><div id="analyses" class="stack"></div></section>
+        <section aria-labelledby="jobs-title"><div class="section-head"><h2 id="jobs-title">다운로드 <span id="job-count" class="count">0</span></h2><button id="open-folder">다운로드 폴더 열기</button></div><div id="jobs" class="stack"></div></section>
+      </div>
+      <aside class="stack">
+        <section class="panel side-panel"><div class="section-head"><h2>도구 상태</h2><button id="install-all" class="small">설치/업데이트</button></div><div id="tools"></div><details id="tool-details"><summary>설치 로그 <span id="tool-busy"></span></summary><pre id="tool-log" role="log" aria-label="도구 설치 로그">아직 설치 기록이 없습니다.</pre></details></section>
+        <section class="panel side-panel"><div class="section-head"><h2>학습된 사이트 <span id="site-count" class="count">0</span></h2></div><div id="sites"></div><p class="hint">2·3단계로 성공한 사이트는 다음부터 그 단계부터 시도합니다.</p></section>
+        <section class="panel side-panel"><h2>설정</h2><form id="settings-form" class="settings">
+          <label>다운로드 폴더<input name="downloadDir" placeholder="서버 기본 다운로드 폴더"></label>
+          <label>쿠키 브라우저<select name="cookiesBrowser"><option value="">사용 안 함</option><option value="edge">Edge</option><option value="chrome">Chrome</option><option value="firefox">Firefox</option></select></label>
+          <label class="check"><input type="checkbox" name="browserVisible">브라우저 창 보이기</label>
+          <label class="check"><input type="checkbox" name="useLoginProfile">로그인 프로필 사용</label>
+          <button id="login-browser" type="button">로그인용 브라우저 열기 ↗</button><p class="hint">위에 입력한 첫 URL을 엽니다.</p>
+          <label>동시 조각 수 <input name="concurrentFragments" type="number" min="1" max="16" step="1" value="4" required></label>
+          <button class="primary" type="submit">설정 저장</button>
+        </form></section>
+        <p class="aside-note">yt-dlp → 페이지 스캔 → 브라우저<br>앞 단계에서 찾으면 다음 단계는 건너뜁니다.</p>
+      </aside>
+    </div>
+    <footer>Video Extractor <span>로컬 워크스페이스 · 외부 CDN 없음</span></footer>
+  </main>
+</body>
+</html>

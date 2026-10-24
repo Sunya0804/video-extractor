@@ -1,0 +1,28 @@
+# public/(웹 화면)을 깃허브 io로 배포한다. io 화면은 같은 PC에서 실행 중인 Video Extractor 서버(127.0.0.1:5280)에 연결해 동작한다.
+name: Pages
+on:
+  push:
+    branches: [main]
+    paths: ['public/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+      - id: deploy
+        uses: actions/deploy-pages@v4
