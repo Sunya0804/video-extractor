@@ -22,6 +22,7 @@ class MainActivity : Activity() {
     lateinit var root: FrameLayout
     lateinit var web: WebView
     private lateinit var bridge: Bridge
+    lateinit var updater: Updater
     // download가 저장소 권한 응답을 기다리는 동안 쓰는 대기열(백그라운드 스레드가 기다린다).
     @Volatile var permissionWait: CountDownLatch? = null
 
@@ -54,6 +55,7 @@ class MainActivity : Activity() {
             }
         }
         bridge = Bridge(this)
+        updater = Updater(this) { bridge.appUpdate(it) }
         web.addJavascriptInterface(bridge, "VXNative")
 
         // targetSdk 36은 화면이 상태 표시줄 밑까지 그려지므로 그만큼 띄운다(바탕은 페이지와 같은 검정).
@@ -72,6 +74,18 @@ class MainActivity : Activity() {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
         }
         web.loadUrl("https://$HOST/assets/www/index.html")
+        if (intent?.action == Updater.ACTION_INSTALL_STATUS) updater.onInstallStatus(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::updater.isInitialized) updater.checkIfDue()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == Updater.ACTION_INSTALL_STATUS) updater.onInstallStatus(intent)
     }
 
     private fun goBack() {
@@ -87,6 +101,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        updater.stop()
         bridge.shutdown()
         web.destroy()
         super.onDestroy()

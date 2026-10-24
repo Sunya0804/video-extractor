@@ -52,9 +52,26 @@ function emit(type, data) {
 }
 setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 25000).unref();
 
+// Electron만 이 연결을 등록한다. node server.mjs에서는 app 도구가 없다.
+let appController = null;
+export function setAppController(controller) {
+  appController = controller;
+  publishAppStatus();
+}
+export function publishAppStatus() {
+  if (!appController) return;
+  state.tools = [...state.tools.filter((t) => t.name !== 'app'), appController.tool()];
+  emit('tools', { tools: state.tools, toolsBusy: state.toolsBusy });
+}
+export const hasActiveDownloads = () => state.jobs.some((j) => ['queued', 'downloading', 'merging'].includes(j.status));
+export function cancelDownloads() {
+  for (const j of state.jobs) j._ctrl?.cancel();
+}
+
 // ---------- 도구 ----------
 async function refreshTools() {
   state.tools = await listTools();
+  if (appController) state.tools.push(appController.tool());
   emit('tools', { tools: state.tools, toolsBusy: state.toolsBusy });
 }
 
@@ -63,7 +80,10 @@ async function runInstall(names) {
   state.toolsBusy = true;
   emit('tools', { tools: state.tools, toolsBusy: true });
   const log = (line) => { console.log('[tools]', line); emit('toolLog', { line }); };
-  try { await installTools(names, log); }
+  try {
+    if (appController && (!names || names.includes('app'))) await appController.install();
+    if (!names || names.some((name) => name !== 'app')) await installTools(names?.filter((name) => name !== 'app'), log);
+  }
   catch (e) { log(`오류: ${e.message}`); }
   finally {
     state.toolsBusy = false;
@@ -327,7 +347,8 @@ async function handleApi(req, res, url, remote = false) {
   if (m === 'POST' && p === '/api/shutdown') {
     send(res, 200, { ok: true });
     console.log('종료 요청을 받았습니다');
-    for (const j of state.jobs) j._ctrl?.cancel();
+    if (appController) { appController.quit(); return; }
+    cancelDownloads();
     for (const c of clients) c.end();
     setTimeout(() => process.exit(0), 500);
     return;
@@ -373,15 +394,25 @@ async function cleanupTmp() {
   } catch {}
 }
 
+// 로그인 쿠키 파일은 다운로드에 다시 쓰여 실행 중에는 남겨 두고, 종료할 때 지운다(다음 시작 때 cleanupTmp도 지움)
+process.on('exit', () => {
+  try { for (const f of fs.readdirSync(TMP_DIR)) if (f.startsWith('cookies-')) fs.rmSync(path.join(TMP_DIR, f), { force: true }); } catch {}
+});
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => process.exit(0));
+
 // 백그라운드 작업(브라우저 제어 등)의 처리되지 않은 오류로 서버 전체가 꺼지지 않게 기록만 한다
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e?.message || e));
 
 await cleanupTmp();
+export const ready = new Promise((resolve, reject) => {
+server.once('error', reject);
 server.listen(PORT, '127.0.0.1', async () => {
+  resolve(server);
   const addr = `http://127.0.0.1:${PORT}/`;
   console.log(`Video Extractor: ${addr}`);
   await refreshTools();
   const missing = state.tools.filter((t) => t.required && !t.installed).map((t) => t.name);
   if (missing.length) console.log(`필수 도구 없음: ${missing.join(', ')} — 화면의 도구 패널에서 설치하세요`);
   if (process.argv.includes('--open')) openPath(addr);
+});
 });

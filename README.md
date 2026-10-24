@@ -27,7 +27,7 @@ DRM(Widevine·PlayReady·FairPlay)이 걸린 콘텐츠는 찾더라도 "DRM" 표
 ### 안드로이드 앱
 - APK를 받아 설치합니다(Android 8.0 이상, arm64). "출처를 알 수 없는 앱" 설치를 허용해야 할 수 있습니다.
 - 받은 파일은 `Download/VideoExtractor`에 저장되고 갤러리에도 나타납니다. 받는 동안은 알림이 떠 있어 화면을 꺼도 계속 받습니다.
-- 앱을 켜면 하루 한 번 yt-dlp를 자동 업데이트하고, 새 앱 버전이 있으면 도구 패널에 표시합니다.
+- 앱을 켜면 하루 한 번 yt-dlp를 자동 업데이트합니다. 앱 시작 및 6시간이 지난 뒤 복귀 시 새 APK를 확인해 앱 안에서 내려받고 설치를 안내합니다. 처음에는 "이 출처의 앱 설치 허용"을 켜야 하며 Android의 설치 확인 화면을 거칩니다.
 - 로그인이 필요한 사이트는 [로그인용 브라우저 열기]로 로그인하면 그 쿠키를 분석·다운로드에 씁니다.
 - 직접 빌드: Android SDK와 JDK가 있으면 `npm run dist:android` → `dist/VideoExtractor-<버전>.apk`. 네이티브 브리지 구조는 [docs/android-bridge.md](docs/android-bridge.md).
 
@@ -37,7 +37,14 @@ DRM(Widevine·PlayReady·FairPlay)이 걸린 콘텐츠는 찾더라도 "DRM" 표
 
 ## 설치·실행
 
-Node.js 22 이상이 필요합니다. 설치할 npm 패키지는 없습니다.
+**권장: [Releases](https://github.com/Sunya0804/video-extractor/releases/latest)의 `VideoExtractor-Setup-<버전>.exe`를 설치하세요.**
+예전 바로가기는 삭제하고, 실행 중인 예전 서버도 종료한 뒤 새 앱을 여세요. 새 앱은 시작 시 및 6시간마다 업데이트를 확인하고 자동으로 내려받으며 종료 시 적용합니다. 도구 패널에서 설치 준비 상태를 확인하고 [설치/업데이트]로 다시 시작할 수도 있습니다.
+
+앱의 도구는 사용자 데이터 폴더의 `bin/`, 설정·학습·로그인 프로필은 그 아래 `data/`에 저장합니다(Windows: `%APPDATA%/video-extractor`). 기존 프로젝트의 설정·학습은 그 폴더에서 `npm run app`으로 처음 실행하면 복사됩니다. 설치된 앱으로 옮길 때는 `VX_LEGACY_ROOT`를 기존 프로젝트 위치로 지정해 한 번 실행하세요. 기존 설정은 덮어쓰지 않습니다.
+
+### 기존 바로가기·개발 실행
+
+Node.js 22 이상이 필요합니다. 기존 바로가기는 개발용으로 계속 쓸 수 있습니다.
 
 1. `install\install.cmd`를 실행하면 아이콘을 만들고 **바탕화면**과 **시작 메뉴**에 `Video Extractor` 바로가기를 만듭니다.
 2. 바로가기를 누르면 서버를 창 없이 백그라운드로 켜고(이미 켜져 있으면 그대로 사용) 기본 브라우저로 화면을 엽니다. 서버 로그는 `data\server.log`, `data\server.err.log`에 남습니다.
@@ -76,3 +83,12 @@ Node.js 22 이상이 필요합니다. 설치할 npm 패키지는 없습니다.
 ## 주의
 
 개인 용도로, 내려받을 권리가 있는 콘텐츠에만 쓰세요. 사이트 이용약관과 저작권법을 지키는 것은 사용자의 책임입니다.
+
+## 앱 빌드와 릴리스
+
+- `npm ci`, `npm run app`: Electron 개발 실행. 서버만 개발할 때는 `node server.mjs`(npm 패키지 없이도 실행 가능).
+- `npm run dist:win`: `dist/VideoExtractor-Setup-<버전>.exe`, `.exe.blockmap`, `latest.yml` 생성. `bin/`, `data/`, 안드로이드 소스와 테스트는 패키지에 포함하지 않습니다.
+- `node android/dist.mjs`: 기존 `~/.chartdesk/android-signing.properties`로 서명한 APK 생성. 키·비밀번호는 저장소에 넣지 않습니다.
+- 리드 확인 후 커밋을 push하고 **`npm run release`**: 같은 버전의 원격/로컬 태그가 없는지 먼저 확인하고 APK와 Windows 설치 파일을 빌드해 GitHub Release에 게시합니다. `latest.yml`과 `.blockmap`도 반드시 함께 올립니다. 앱 업데이트는 같은 앱 ID·서명 키를 유지해야 합니다.
+
+`VX_DATA_ROOT`를 지정하면 Node 개발 서버도 그 아래 `bin/`, `data/`를 사용합니다. 지정하지 않으면 종전처럼 프로젝트 폴더를 사용합니다. Electron은 서버를 import하기 전에 사용자 데이터 경로를 지정합니다.

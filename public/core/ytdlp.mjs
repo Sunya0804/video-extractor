@@ -6,12 +6,16 @@ export function newId(prefix) {
   return `${prefix}${Date.now().toString(36)}${seq.toString(36)}`;
 }
 
+// 쿠키(로그인)가 있어야 받을 수 있는 영상이라는 yt-dlp 오류
+const LOGIN_REQUIRED = /^ERROR:.*(Sign in to confirm|--cookies-from-browser or --cookies|members[- ]only|join this channel)/im;
+export const loginRequired = (stderr) => LOGIN_REQUIRED.test(String(stderr || ''));
+
 // yt-dlp 오류 출력에서 사람이 읽을 한 줄을 고른다.
 export function errorLine(stderr) {
   const lines = String(stderr || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const err = lines.filter((l) => l.startsWith('ERROR:'));
-  // 쿠키(로그인)가 필요한 영상: yt-dlp 안내 대신 우리 앱의 로그인 방법을 알려 준다
-  if (err.some((l) => /Sign in to confirm|--cookies-from-browser or --cookies|members[- ]only|join this channel/i.test(l))) {
+  // yt-dlp 안내 대신 우리 앱의 로그인 방법을 알려 준다
+  if (loginRequired(stderr)) {
     return '로그인이 필요한 영상입니다(성인 인증·멤버십 등). 설정의 [로그인용 브라우저 열기]로 YouTube(Google)에 로그인한 뒤 그 창을 닫고 다시 분석하세요.';
   }
   return (err.length ? err[err.length - 1] : lines[lines.length - 1] || '알 수 없는 오류').replace(/^ERROR:\s*/, '').slice(0, 400);
@@ -76,7 +80,7 @@ export function extractArgs({ access, pluginArgs = [] }) {
 // yt-dlp -J 실행 결과 → 성공: { ok: true, items, title }, 실패: { ok: false, error, unsupported }
 export function parseExtract({ code, stdout, stderr }, { stage, url }) {
   if (code !== 0 || !String(stdout || '').trim()) {
-    return { ok: false, error: errorLine(stderr), unsupported: /Unsupported URL|No video formats found|Unable to extract/i.test(stderr || '') };
+    return { ok: false, error: errorLine(stderr), unsupported: /Unsupported URL|No video formats found|Unable to extract/i.test(stderr || ''), loginRequired: loginRequired(stderr) };
   }
   let info;
   try { info = JSON.parse(stdout); } catch { return { ok: false, error: 'yt-dlp 출력 해석 실패' }; }

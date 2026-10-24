@@ -33,6 +33,10 @@ object Cookies {
             }
         }
         if (lines.isEmpty()) return null
+        // 분석·다운로드마다 새 파일이 생겨 쌓이므로 오래된 것은 지운다.
+        // shortcut: 하루 넘게 지난 분석 결과로 다운로드하면 쿠키 없이 받는다, 문제가 되면 다운로드 때 다시 쓰게 바꾼다
+        val old = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+        dir.listFiles { f -> f.name.startsWith("cookies-") && f.lastModified() < old }?.forEach { it.delete() }
         val file = File(dir, "cookies-${System.currentTimeMillis()}-${(Math.random() * 1e6).toInt()}.txt")
         file.writeText("# Netscape HTTP Cookie File\n" + lines.joinToString("\n") + "\n")
         return file.absolutePath
