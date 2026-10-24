@@ -67,6 +67,11 @@ async function stageYtdlp(deps, a, setStage, errors) {
   }
   errors.push(`1단계: ${r.error}`);
   setStage(1, 'failed', r.unsupported ? `처리하지 못함 — ${r.error}` : r.error);
+  // yt-dlp가 영상을 알아봤고 로그인만 없는 경우라, 2·3단계를 해도 원인만 가려진다
+  if (r.loginRequired) {
+    a._stop = true;
+    for (const n of [2, 3]) setStage(n, 'skipped', '로그인이 필요해 건너뜀');
+  }
   return null;
 }
 
@@ -141,6 +146,7 @@ export async function runAnalysis(deps, a, forceStage) {
   try {
     for (const n of order) {
       const items = await STAGE_RUNNERS[n](deps, a, setStage, errors);
+      if (a._stop) break;
       if (!items?.length) continue;
       const usable = items.find((i) => !i.drm);
       if (usable) {

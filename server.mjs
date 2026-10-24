@@ -394,6 +394,12 @@ async function cleanupTmp() {
   } catch {}
 }
 
+// 로그인 쿠키 파일은 다운로드에 다시 쓰여 실행 중에는 남겨 두고, 종료할 때 지운다(다음 시작 때 cleanupTmp도 지움)
+process.on('exit', () => {
+  try { for (const f of fs.readdirSync(TMP_DIR)) if (f.startsWith('cookies-')) fs.rmSync(path.join(TMP_DIR, f), { force: true }); } catch {}
+});
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => process.exit(0));
+
 // 백그라운드 작업(브라우저 제어 등)의 처리되지 않은 오류로 서버 전체가 꺼지지 않게 기록만 한다
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e?.message || e));
 
