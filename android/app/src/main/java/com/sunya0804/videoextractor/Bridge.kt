@@ -191,10 +191,12 @@ class Bridge(private val activity: MainActivity) {
         val code = result.getInt("exitCode")
         if (code != -2) {
             // JS 복귀를 기다리지 않고 저장·알림. 알림 오류가 다운로드 결과를 바꾸지는 않는다.
+            // 자막만 실패해도 yt-dlp는 1로 끝나므로, 최종 파일이 나왔으면 화면(android.js)과 같이 완료로 본다.
+            val ok = code == 0 || file != null
             val completed = JSONObject().put("id", jobId).put("title", args.optString("title", "Video Extractor"))
                 .put("format", args.optString("format", "영상")).put("createdAt", System.currentTimeMillis())
-                .put("status", if (code == 0) "done" else "failed").put("file", file ?: JSONObject.NULL)
-                .put("error", if (code == 0) JSONObject.NULL else result.optString("err"))
+                .put("status", if (ok) "done" else "failed").put("file", file ?: JSONObject.NULL)
+                .put("error", if (ok) JSONObject.NULL else result.optString("err"))
             runCatching { DownloadResults.finish(ctx, completed) }
                 .onFailure { android.util.Log.w("VideoExtractor", "결과 알림 실패", it) }
         }
