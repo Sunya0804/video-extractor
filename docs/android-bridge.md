@@ -53,6 +53,15 @@ JS → 네이티브: `VXNative.call(callId: String, method: String, argsJson: St
 - yt-dlp는 앱 시작 시 하루 1회 JS가 `updateYtdlp` 호출(배포 라이브러리의 yt-dlp가 오래되면 YouTube가 실패하므로).
 - 패키지: `com.sunya0804.videoextractor`, minSdk 26, compile/target 36, abiFilters `arm64-v8a`.
 
+## 공유 링크와 다운로드 결과 알림
+
+- `ACTION_SEND` / `text/plain`을 받으면 MainActivity가 제목·설명 속 첫 유효 HTTP(S) URL을 추출합니다. URL이 없으면 짧은 안내만 표시합니다. 처음 실행과 `onNewIntent` 모두 처리하며, 화면 재생성 시 대기 인텐트는 보존하고 이미 소비한 공유는 다시 분석하지 않습니다.
+- JS는 `init` 후 저장된 작업과 네이티브 결과를 복원하고 `uiReady {}`를 호출합니다. 그 뒤 네이티브 `launch { url }` 이벤트는 입력칸을 채우고 기존 `/api/analyze` 흐름을 시작합니다. `launch { jobId }`는 해당 다운로드 카드로 스크롤·포커스합니다. 공용 분석 폼과 PC 목록 렌더러는 변경하지 않습니다.
+- `download` 인자에 `title`, `format`을 추가하고 응답에 `file`을 추가합니다. 네이티브는 완료·실패 결과를 먼저 저장한 후 기존 `downloads` 채널에 알림을 게시합니다. WebView의 응답 처리를 기다리지 않으며, 취소에는 결과 알림을 띄우지 않습니다. 알림마다 작업 ID를 구분해 진행 알림이나 다른 결과를 덮어쓰지 않습니다.
+- `init` 응답의 `downloadResults`는 아직 JS가 저장하지 못한 결과(최대 30개)입니다. JS가 로컬 작업 목록에 저장한 뒤 `ackDownloadResults { ids: string[] }`로 해당 결과만 지웁니다. 네이티브 실행 전 오류는 `notifyDownload { id, title, status, error, ... }`로 동일한 저장·알림 흐름을 사용합니다.
+- 알림을 누르면 `SHOW_JOB` 인텐트로 앱을 열어 작업을 보여 줍니다. Android 13+ 알림 권한 요청은 기존 다운로드 시작 흐름을 재사용하며, 거절해도 다운로드·결과 저장은 계속됩니다.
+- 순수 URL 추출 검사는 `android/checks/SharedLinkCheck.kt`의 JVM `main`(외부 테스트 의존성 없음), 브리지 준비·복원·공유·종료 상태 검사는 `node --test tests/android-events.test.mjs`로 확인합니다.
+
 ## 앱 자동 업데이트
 
 - `appUpdate { action: 'check' | 'install' }` → `{ status, latest, current, progress }`. check는 백그라운드 확인을 시작하고 현재 상태를 즉시 반환합니다. install은 준비된 APK를 설치하며 파일이 없으면 확인부터 시작합니다.

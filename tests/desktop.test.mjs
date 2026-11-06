@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { connectUpdater } from '../desktop/updater.mjs';
+import { connectUpdater, notesText } from '../desktop/updater.mjs';
 import { migrateData, isVideoExtractor } from '../desktop/storage.mjs';
 
 function fixture(packaged = true) {
@@ -44,6 +44,26 @@ test('업데이트 다운로드·준비 상태를 게시하고 설치는 다시 
   accepted.updater.emit('update-downloaded', { version: '0.2.0' });
   await accepted.controller.install();
   assert.equal(accepted.installs(), 1);
+});
+
+test('받은 업데이트는 버전별 변경 내용을 보여 주고, 승인하면 설치한다', async () => {
+  assert.equal(notesText([
+    { version: '0.1.6', note: '<ul>\n<li>변경 <code>A</code> &amp; B</li>\n<li>둘째</li>\n</ul>' },
+    { version: '0.1.5', note: '<p>수정</p>' },
+  ]), '[0.1.6]\n• 변경 A & B\n• 둘째\n\n[0.1.5]\n수정');
+  assert.equal(notesText('<p>한 줄</p>'), '한 줄');
+  assert.equal(notesText(null), '');
+  for (const answer of [true, false]) {
+    const updater = new EventEmitter();
+    let asked, installs = 0;
+    connectUpdater(updater, { version: '0.1.4', packaged: true, changed() {}, restart: async (install) => install(),
+      ask: async (version, notes) => { asked = [version, notes]; return answer; } });
+    updater.quitAndInstall = () => { installs++; };
+    updater.emit('update-downloaded', { version: '0.1.6', releaseNotes: [{ version: '0.1.6', note: '<p>새 기능</p>' }] });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(asked, ['0.1.6', '[0.1.6]\n새 기능']);
+    assert.equal(installs, answer ? 1 : 0);
+  }
 });
 
 test('개발 모드는 업데이트 확인과 설치를 실행하지 않는다', async () => {

@@ -55,6 +55,7 @@ class Bridge(private val activity: MainActivity) {
     }
 
     fun appUpdate(data: JSONObject) = event("appUpdate", data)
+    fun launch(json: String) = event("launch", JSONObject(json))
 
     fun shutdown() = pool.shutdownNow()
 
@@ -67,6 +68,13 @@ class Bridge(private val activity: MainActivity) {
 
     private fun run(method: String, args: JSONObject): JSONObject = when (method) {
         "init" -> init()
+        "uiReady" -> { main.post { activity.onUiReady() }; ok() }
+        "ackDownloadResults" -> {
+            val ids = args.getJSONArray("ids")
+            DownloadResults.acknowledge(ctx, (0 until ids.length()).map { ids.getString(it) }.toSet())
+            ok()
+        }
+        "notifyDownload" -> { DownloadResults.finish(ctx, args); ok() }
         "appUpdate" -> when (args.optString("action")) {
             "check" -> activity.updater.check()
             "install" -> activity.updater.install()
@@ -124,6 +132,7 @@ class Bridge(private val activity: MainActivity) {
         downloadDir().mkdirs() // 28 이하는 권한을 받은 뒤(첫 다운로드) 다시 만든다.
         return JSONObject()
             .put("appVersion", BuildConfig.VERSION_NAME)
+            .put("downloadResults", DownloadResults.pending(ctx))
             .put("appUpdate", activity.updater.snapshot())
             .put("ytdlpVersion", YoutubeDL.getInstance().version(ctx) ?: JSONObject.NULL)
             .put("pluginDir", plugins.absolutePath)
@@ -163,19 +172,35 @@ class Bridge(private val activity: MainActivity) {
     }
 
     private fun download(args: JSONObject): JSONObject {
-        engineReady
-        ensureStorage()
         val jobId = args.getString("jobId")
-        return try {
+        var file: String? = null
+        val result = try {
+            engineReady
+            ensureStorage()
             val response = YoutubeDL.getInstance().execute(request(args), jobId) { _, _, line ->
+                if (line.startsWith("VXFILE ")) file = line.removePrefix("VXFILE ").trim()
                 event("ytdlpLine", JSONObject().put("jobId", jobId).put("line", line))
             }
+            response.out.lineSequence().lastOrNull { it.startsWith("VXFILE ") }?.let { file = it.removePrefix("VXFILE ").trim() }
             JSONObject().put("exitCode", response.exitCode).put("err", response.err)
         } catch (_: YoutubeDL.CanceledException) {
             JSONObject().put("exitCode", -2).put("err", "cancelled")
-        } catch (error: YoutubeDLException) {
+        } catch (error: Exception) {
             JSONObject().put("exitCode", 1).put("err", error.message ?: error.toString())
         }
+        val code = result.getInt("exitCode")
+        if (code != -2) {
+            // JS 복귀를 기다리지 않고 저장·알림. 알림 오류가 다운로드 결과를 바꾸지는 않는다.
+            // 자막만 실패해도 yt-dlp는 1로 끝나므로, 최종 파일이 나왔으면 화면(android.js)과 같이 완료로 본다.
+            val ok = code == 0 || file != null
+            val completed = JSONObject().put("id", jobId).put("title", args.optString("title", "Video Extractor"))
+                .put("format", args.optString("format", "영상")).put("createdAt", System.currentTimeMillis())
+                .put("status", if (ok) "done" else "failed").put("file", file ?: JSONObject.NULL)
+                .put("error", if (ok) JSONObject.NULL else result.optString("err"))
+            runCatching { DownloadResults.finish(ctx, completed) }
+                .onFailure { android.util.Log.w("VideoExtractor", "결과 알림 실패", it) }
+        }
+        return result.put("file", file ?: JSONObject.NULL)
     }
 
     /** API 28 이하는 공용 Download에 쓰려면 권한이 필요하다. 응답이 올 때까지(최대 2분) 이 스레드에서 기다린다. */
@@ -197,7 +222,7 @@ class Bridge(private val activity: MainActivity) {
         if (args.optBoolean("active")) {
             if (Build.VERSION.SDK_INT >= 33 && activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 // 거절해도 서비스는 돈다(알림만 안 보임).
-                main.post { activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), MainActivity.ASK_NOTIFICATIONS) }
+                main.post { activity.requestNotificationPermission() }
             }
             ctx.startForegroundService(intent.putExtra("text", args.optString("text")))
         } else {

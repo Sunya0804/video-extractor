@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -110,13 +111,29 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
         // 패키지·서명은 최종적으로 PackageInstaller가 검증한다.
         ready = file
         state("설치 준비됨", 100)
+        val notes = releaseNotes(version).let { if (it.isEmpty()) "" else "\n\n$it" }
         activity.runOnUiThread {
             if (!activity.isFinishing && !activity.isDestroyed) AlertDialog.Builder(activity)
                 .setTitle("Video Extractor 업데이트")
-                .setMessage("새 버전 $version 을 받았습니다. 설치하면 앱이 닫힙니다. 지금 설치할까요?")
+                .setMessage("새 버전 $version 을 받았습니다.$notes\n\n설치하면 앱이 닫힙니다. 지금 설치할까요?")
                 .setPositiveButton("설치") { _, _ -> install() }.setNegativeButton("나중에", null).show()
         }
     }
+
+    /** 지금 버전보다 새롭고 받은 버전까지인 릴리스의 변경 내용(최신순). 불러오지 못하면 빈 문자열 */
+    private fun releaseNotes(upTo: String): String = runCatching {
+        val conn = connection(RELEASES)
+        val list = try {
+            check(conn.responseCode == 200) { "GitHub 응답 ${conn.responseCode}" }
+            conn.inputStream.bufferedReader().use { JSONArray(it.readText()) }
+        } finally { conn.disconnect() }
+        (0 until list.length()).map { list.getJSONObject(it) }
+            .filter { !it.optBoolean("draft") && !it.optBoolean("prerelease") }
+            .mapNotNull { release ->
+                val v = release.getString("tag_name").removePrefix("v")
+                if (newer(v, BuildConfig.VERSION_NAME) && !newer(v, upTo)) "[$v]\n${plain(release.optString("body"))}" else null
+            }.joinToString("\n\n")
+    }.getOrDefault("")
 
     fun install(): JSONObject {
         activity.runOnUiThread {
@@ -170,6 +187,12 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
         const val ACTION_INSTALL_STATUS = "com.sunya0804.videoextractor.INSTALL_STATUS"
         const val SIX_HOURS = 6 * 60 * 60 * 1000L
         const val LATEST = "https://api.github.com/repos/Sunya0804/video-extractor/releases/latest"
+        const val RELEASES = "https://api.github.com/repos/Sunya0804/video-extractor/releases?per_page=30"
+        /** 릴리스 노트 Markdown을 대화상자에 보일 일반 텍스트로 */
+        fun plain(markdown: String) = markdown.replace("\r", "")
+            .replace(Regex("^#+\\s*", RegexOption.MULTILINE), "")
+            .replace(Regex("^\\s*[-*]\\s+", RegexOption.MULTILINE), "• ")
+            .replace("**", "").replace("`", "").trim()
         fun newer(a: String, b: String): Boolean {
             val x = a.split('.').map { it.toIntOrNull() ?: 0 }
             val y = b.split('.').map { it.toIntOrNull() ?: 0 }

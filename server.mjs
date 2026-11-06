@@ -3,50 +3,62 @@ import http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { DEFAULT_DOWNLOAD_DIR, safeDownloadDir, validateDownloadDir } from './lib/download-dir.mjs';
 import { ROOT, DATA_DIR, DESKTOP_UA, newId, openPath } from './lib/util.mjs';
 import { listTools, installTools } from './lib/tools.mjs';
-import { extract, startDownload } from './lib/ytdlp.mjs';
+import { extract, startDownload, SUB_LANGS_RE, RATE_RE, NAME_STYLES, downloadPrefs } from './lib/ytdlp.mjs';
 import { scanPage } from './lib/scan.mjs';
 import { sites } from './lib/sites.mjs';
 import { newAnalysis, runAnalysis } from './public/core/pipeline.mjs';
 import { capture, openLoginBrowser, profileCookies, TMP_DIR } from './lib/browser.mjs';
 import { checkDrm } from './lib/drm.mjs';
+import { createJobHistory, isFinishedJob, jobFileStatus } from './lib/job-history.mjs';
+import { DEFAULT_CONCURRENT_DOWNLOADS, concurrentDownloadLimit, validConcurrentDownloads, pumpDownloadQueue } from './public/core/download-queue.mjs';
 
 const PORT = Number(process.env.PORT) || 5280;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-const MAX_ACTIVE_JOBS = 2;
+const jobHistory = createJobHistory(path.join(DATA_DIR, 'jobs.json'));
 
 // ---------- 상태 ----------
 const state = {
   tools: [],
   toolsBusy: false,
   settings: {
-    downloadDir: path.join(os.homedir(), 'Downloads', 'VideoExtractor'),
+    downloadDir: DEFAULT_DOWNLOAD_DIR,
     browserVisible: false,
     cookiesBrowser: '',
     useLoginProfile: true,
     concurrentFragments: 4,
+    concurrentDownloads: DEFAULT_CONCURRENT_DOWNLOADS,
+    writeSubs: false,
+    subLangs: 'ko,en',
+    nameStyle: 'title',
+    channelDir: false,
+    rateLimit: '',
   },
   analyses: [], // 최신이 앞
   jobs: [],     // 최신이 앞
 };
 
 try { Object.assign(state.settings, JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'))); } catch {}
+state.settings.downloadDir = safeDownloadDir(state.settings.downloadDir) || DEFAULT_DOWNLOAD_DIR;
+state.settings.concurrentDownloads = concurrentDownloadLimit(state.settings.concurrentDownloads);
+state.jobs = await jobHistory.load();
 
-async function saveSettings() {
+async function saveSettings(settings = state.settings) {
   await fsp.mkdir(DATA_DIR, { recursive: true });
-  await fsp.writeFile(SETTINGS_FILE, JSON.stringify(state.settings, null, 2));
+  await fsp.writeFile(SETTINGS_FILE, JSON.stringify(settings, null, 2));
 }
 
 // 밑줄로 시작하는 내부 필드(_access, _ctrl 등)는 화면으로 보내지 않는다
 const pub = (obj) => JSON.parse(JSON.stringify(obj, (k, v) => (k.startsWith('_') ? undefined : v)));
-const snapshot = () => pub({ tools: state.tools, toolsBusy: state.toolsBusy, settings: state.settings, analyses: state.analyses, jobs: state.jobs, sites: sites.list() });
+const snapshot = () => pub({ tools: state.tools, toolsBusy: state.toolsBusy, settings: state.settings, capabilities: { selectDownloadDir: !!appController?.selectDownloadDir, jobHistory: true }, analyses: state.analyses, jobs: state.jobs.map(jobFileStatus), sites: sites.list() });
 
 // ---------- SSE ----------
 const clients = new Set();
 function emit(type, data) {
+  if (type === 'job') data = jobFileStatus(data);
   const payload = `event: ${type}\ndata: ${JSON.stringify(pub(data))}\n\n`;
   for (const res of clients) res.write(payload);
 }
@@ -67,6 +79,7 @@ export const hasActiveDownloads = () => state.jobs.some((j) => ['queued', 'downl
 export function cancelDownloads() {
   for (const j of state.jobs) j._ctrl?.cancel();
 }
+export const flushJobHistory = () => jobHistory.flush();
 
 // ---------- 도구 ----------
 async function refreshTools() {
@@ -135,34 +148,34 @@ function createAnalysis(url, forceStage) {
 }
 
 // ---------- 다운로드 ----------
-function pumpJobs() {
-  const active = state.jobs.filter((j) => j.status === 'downloading' || j.status === 'merging').length;
-  let slots = MAX_ACTIVE_JOBS - active;
-  for (const job of [...state.jobs].reverse()) {
-    if (slots <= 0) break;
-    if (job.status !== 'queued') continue;
-    slots--;
-    launchJob(job);
+function finishJob(job) {
+  emit('job', job);
+  void jobHistory.save(state.jobs);
+  if (['done', 'failed'].includes(job.status)) {
+    try { Promise.resolve(appController?.notifyDownload?.(pub(job))).catch((error) => console.warn('[notification]', error)); }
+    catch (error) { console.warn('[notification]', error); }
   }
+  pumpJobs();
+}
+
+function pumpJobs() {
+  pumpDownloadQueue(state.jobs, state.settings.concurrentDownloads, launchJob);
 }
 
 async function launchJob(job) {
-  job.status = 'downloading';
   emit('job', job);
   try { await fsp.mkdir(state.settings.downloadDir, { recursive: true }); }
-  catch (e) { Object.assign(job, { status: 'failed', error: `다운로드 폴더를 만들지 못함: ${e.message}` }); emit('job', job); return pumpJobs(); }
+  catch (e) { Object.assign(job, { status: 'failed', error: `다운로드 폴더를 만들지 못함: ${e.message}` }); return finishJob(job); }
   job._ctrl = startDownload({
     url: job._url, access: job._access, fmt: job._fmt, title: job._title,
-    outDir: state.settings.downloadDir, fragments: state.settings.concurrentFragments,
-    onLog: (line) => { job.log.push(line); if (job.log.length > 40) job.log.shift(); },
+    outDir: state.settings.downloadDir, fragments: state.settings.concurrentFragments,    onLog: (line) => { job.log.push(line); if (job.log.length > 40) job.log.shift(); },
     onUpdate: (patch) => {
-      if (['done', 'failed', 'cancelled'].includes(job.status)) return;
+      if (isFinishedJob(job)) return;
       Object.assign(job, patch);
       const now = Date.now();
-      const final = ['done', 'failed', 'cancelled'].includes(job.status);
+      if (isFinishedJob(job)) return finishJob(job);
       // 진행 이벤트는 초당 4회로 제한
-      if (final || !job._last || now - job._last > 250) { job._last = now; emit('job', job); }
-      if (final) pumpJobs();
+      if (!job._last || now - job._last > 250) { job._last = now; emit('job', job); }
     },
   });
 }
@@ -180,7 +193,7 @@ function createJob({ analysisId, itemId, format, height }) {
     status: 'queued', percent: null, speed: null, eta: null, downloaded: null, total: null,
     file: null, error: null, log: [], createdAt: Date.now(),
     _url: item.url, _access: item._access || {}, _title: item.stage > 1 ? item.title : null,
-    _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind },
+    _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, ...downloadPrefs(state.settings) },
   };
   state.jobs.unshift(job);
   emit('job', job);
@@ -226,24 +239,18 @@ async function serveStatic(req, res, pathname) {
 }
 
 const SETTING_RULES = {
-  downloadDir: (v) => safeDownloadDir(v),
+  downloadDir: (v) => typeof v === 'string' ? v : undefined,
   browserVisible: (v) => typeof v === 'boolean' ? v : undefined,
   cookiesBrowser: (v) => ['', 'edge', 'chrome', 'firefox'].includes(v) ? v : undefined,
   useLoginProfile: (v) => typeof v === 'boolean' ? v : undefined,
   concurrentFragments: (v) => Number.isInteger(v) && v >= 1 && v <= 16 ? v : undefined,
+  concurrentDownloads: (v) => validConcurrentDownloads(v) ? v : undefined,
+  writeSubs: (v) => typeof v === 'boolean' ? v : undefined,
+  subLangs: (v) => typeof v === 'string' && v.length <= 100 && SUB_LANGS_RE.test(v) ? v : undefined,
+  nameStyle: (v) => NAME_STYLES.includes(v) ? v : undefined,
+  channelDir: (v) => typeof v === 'boolean' ? v : undefined,
+  rateLimit: (v) => v === '' || (typeof v === 'string' && RATE_RE.test(v)) ? v : undefined,
 };
-
-// 다운로드 폴더: 절대 경로만, UNC·장치 경로(\\server, \\?\)와 시작프로그램 폴더는 거부
-function safeDownloadDir(v) {
-  if (typeof v !== 'string') return undefined;
-  const raw = v.trim();
-  // Windows는 "C:\..." 처럼 드라이브 문자로 시작하는 경로만(\\server, \\?\, \폴더 같은 형태 거부)
-  if (process.platform === 'win32' ? !/^[A-Za-z]:[\\/]/.test(raw) : !path.isAbsolute(raw)) return undefined;
-  const dir = path.resolve(raw);
-  if (/^[\\/]{2}/.test(dir)) return undefined;
-  if (/[\\/]Start Menu[\\/]Programs[\\/]Startup([\\/]|$)/i.test(dir)) return undefined;
-  return dir;
-}
 
 // 폴더를 만들고 실제 디렉터리인지 확인한 뒤에만 탐색기로 연다
 async function ensureDir(dir) {
@@ -283,16 +290,27 @@ async function handleApi(req, res, url, remote = false) {
     const body = await readJson(req);
     return send(res, 200, { id: createJob(body).id });
   }
+  if (m === 'DELETE' && p === '/api/jobs/completed') {
+    const removed = state.jobs.filter(isFinishedJob);
+    state.jobs = state.jobs.filter((job) => !isFinishedJob(job));
+    for (const job of removed) emit('jobRemoved', { id: job.id });
+    await jobHistory.save(state.jobs);
+    return send(res, 200, { ok: true, removed: removed.length });
+  }
   const jm = p.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|reveal))?$/);
   if (jm) {
     const job = state.jobs.find((j) => j.id === jm[1]);
     if (!job) return send(res, 404, { error: '작업을 찾지 못했습니다' });
     if (m === 'POST' && jm[2] === 'cancel') {
-      if (job.status === 'queued') { job.status = 'cancelled'; emit('job', job); }
+      if (job.status === 'queued') { job.status = 'cancelled'; finishJob(job); }
       else job._ctrl?.cancel();
       return send(res, 200, { ok: true });
     }
     if (m === 'POST' && jm[2] === 'reveal') {
+      if (jobFileStatus(job).fileMissing) {
+        emit('job', job);
+        return send(res, 404, { error: '파일 없음: 완료된 파일이 이동되거나 삭제되었습니다.' });
+      }
       if (job.file && fs.existsSync(job.file)) openPath(job.file, { select: true });
       else openPath(await ensureDir(state.settings.downloadDir));
       return send(res, 200, { ok: true });
@@ -301,27 +319,33 @@ async function handleApi(req, res, url, remote = false) {
       if (['queued', 'downloading', 'merging'].includes(job.status)) return send(res, 409, { error: '진행 중인 작업은 먼저 취소하세요' });
       state.jobs = state.jobs.filter((j) => j !== job);
       emit('jobRemoved', { id: job.id });
+      await jobHistory.save(state.jobs);
       return send(res, 200, { ok: true });
     }
+  }
+  if (m === 'POST' && p === '/api/settings/select-download-dir') {
+    if (remote) return send(res, 403, { error: '폴더 선택은 PC에서 연 화면(127.0.0.1)에서만 사용할 수 있습니다.' });
+    if (!appController?.selectDownloadDir) return send(res, 409, { error: '폴더 선택은 Electron 앱에서 사용할 수 있습니다. 경로를 직접 입력하세요.' });
+    const downloadDir = await appController.selectDownloadDir(state.settings.downloadDir);
+    return send(res, 200, { downloadDir: downloadDir ?? null });
   }
   if (m === 'POST' && p === '/api/settings') {
     const body = await readJson(req);
     if (remote && 'downloadDir' in body && body.downloadDir !== state.settings.downloadDir) {
       return send(res, 403, { error: '다운로드 폴더는 PC에서 연 화면(127.0.0.1)에서만 바꿀 수 있습니다' });
     }
-    if ('downloadDir' in body && body.downloadDir !== state.settings.downloadDir) {
-      const dir = safeDownloadDir(body.downloadDir);
-      if (!dir) return send(res, 400, { error: '다운로드 폴더 경로가 올바르지 않습니다(절대 경로, 네트워크·시작프로그램 폴더 불가)' });
-      try { await ensureDir(dir); } catch (e) { return send(res, 400, { error: `다운로드 폴더를 만들 수 없습니다: ${e.message}` }); }
-    }
+    const next = { ...state.settings };
     for (const [k, rule] of Object.entries(SETTING_RULES)) {
       if (!(k in body)) continue;
       const v = rule(body[k]);
       if (v === undefined) return send(res, 400, { error: `설정 값이 올바르지 않습니다: ${k}` });
-      state.settings[k] = v;
+      next[k] = v;
     }
-    await saveSettings();
+    if ('downloadDir' in body) next.downloadDir = await validateDownloadDir(body.downloadDir);
+    await saveSettings(next);
+    state.settings = next;
     emit('settings', state.settings);
+    pumpJobs();
     return send(res, 200, { settings: state.settings });
   }
   if (m === 'POST' && p === '/api/login-browser') {
@@ -350,7 +374,7 @@ async function handleApi(req, res, url, remote = false) {
     if (appController) { appController.quit(); return; }
     cancelDownloads();
     for (const c of clients) c.end();
-    setTimeout(() => process.exit(0), 500);
+    setTimeout(async () => { await flushJobHistory(); process.exit(0); }, 500);
     return;
   }
   if (m === 'POST' && p === '/api/open-folder') {
@@ -398,7 +422,7 @@ async function cleanupTmp() {
 process.on('exit', () => {
   try { for (const f of fs.readdirSync(TMP_DIR)) if (f.startsWith('cookies-')) fs.rmSync(path.join(TMP_DIR, f), { force: true }); } catch {}
 });
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => process.exit(0));
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, async () => { await flushJobHistory(); process.exit(0); });
 
 // 백그라운드 작업(브라우저 제어 등)의 처리되지 않은 오류로 서버 전체가 꺼지지 않게 기록만 한다
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e?.message || e));

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 재생 삼각형 + 내려받기 막대(make-icon.ps1의 256px 좌표를 원형 마스크(반지름 33dp) 안에 들어가게 축소) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M42.48,30.32L42.48,61.04L68.08,45.68Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M33.52,71.92h40.96v5.76h-40.96z" />
+</vector>

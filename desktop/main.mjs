@@ -1,9 +1,10 @@
-import { app, BrowserWindow, dialog, Menu, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, Notification, session, shell } from 'electron';
 import electronUpdater from 'electron-updater';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrateData, isVideoExtractor } from './storage.mjs';
 import { connectUpdater } from './updater.mjs';
+import { createDownloadNotifier } from './notifications.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const origin = 'http://127.0.0.1:5280';
@@ -24,6 +25,7 @@ async function quit(action = () => app.quit()) {
     }
     quitting = true;
     serverModule?.cancelDownloads();
+    await serverModule?.flushJobHistory();
     action();
   } finally { closing = false; }
 }
@@ -55,8 +57,15 @@ else {
     window.on('close', (event) => { if (!quitting) { event.preventDefault(); void quit(); } });
     window.on('query-session-end', () => { quitting = true; });
     window.on('closed', () => { window = null; });
-    controller = connectUpdater(electronUpdater.autoUpdater, { version: app.getVersion(), packaged: app.isPackaged, changed: () => serverModule?.publishAppStatus(), restart: quit });
-    if (serverModule) serverModule.setAppController({ ...controller, quit: () => void quit() });
+    controller = connectUpdater(electronUpdater.autoUpdater, { version: app.getVersion(), packaged: app.isPackaged, changed: () => serverModule?.publishAppStatus(), restart: quit,
+      ask: async (version, notes) => window && (await dialog.showMessageBox(window, { type: 'info', title: 'Video Extractor 업데이트', buttons: ['지금 다시 시작', '나중에'], defaultId: 0, cancelId: 1,
+        message: `새 버전 ${version}을 받았습니다`, detail: `${notes || '변경 내용을 불러오지 못했습니다.'}\n\n지금 다시 시작하면 업데이트됩니다. 나중에 앱을 닫을 때도 자동으로 설치됩니다.` })).response === 0 });
+    if (serverModule) serverModule.setAppController({ ...controller, quit: () => void quit(),
+      notifyDownload: createDownloadNotifier({ Notification, focus: show, icon: path.join(root, 'install', 'icon.ico') }),
+      selectDownloadDir: async (defaultPath) => {
+        const result = await dialog.showOpenDialog(window, { title: '다운로드 폴더 선택', defaultPath, properties: ['openDirectory'] });
+        return result.canceled ? null : result.filePaths[0];
+      } });
     else await dialog.showMessageBox(window, { message: '기존 Video Extractor 서버에 연결했습니다.', detail: '앱 도구 패널과 사용자 데이터 저장 위치를 사용하려면 예전 바로가기로 실행한 서버를 종료하고 앱을 다시 여세요.' });
     await window.loadURL(origin);
     void controller.check();
