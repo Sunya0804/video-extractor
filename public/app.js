@@ -121,6 +121,20 @@ function renderAnalyses() {
 }
 function renderJobs() {
   $('#job-count').textContent = state.jobs.length;
+  let clear = $('#clear-completed-jobs');
+  if (!clear) {
+    clear = button('완료 항목 지우기', 'clear-jobs', async () => {
+      await request('/api/jobs/completed', undefined, 'DELETE');
+      message('끝난 다운로드 기록을 지웠습니다. 파일은 삭제하지 않습니다.');
+    }, false, 'small');
+    clear.id = 'clear-completed-jobs';
+    const controls = el('div', null, 'actions');
+    $('#open-folder').before(controls);
+    controls.append(clear, $('#open-folder'));
+  }
+  clear.hidden = !state.capabilities?.jobHistory;
+  clear.dataset.locked = String(!state.jobs.some((job) => ['done', 'failed', 'cancelled'].includes(job.status)));
+  clear.disabled = clear.dataset.locked === 'true' || busy.has('clear-jobs');
   preserveDetails($('#jobs'), () => state.jobs.length ? [...state.jobs].sort((a,b) => b.createdAt - a.createdAt).map(job => {
     const card = el('article', null, 'card'); const top = el('div', null, 'job-top'); const title = el('div', null, 'job-title'); title.append(el('h3', job.title), el('div', `형식 ${job.format}`, 'meta')); top.append(title, chip(job.status)); card.append(top);
     const progress = el('div', null, 'progress'); progress.setAttribute('role', 'progressbar'); progress.setAttribute('aria-label', `${job.title} 다운로드 진행률`); progress.setAttribute('aria-valuemin', '0'); progress.setAttribute('aria-valuemax', '100'); const fill = el('div', null, 'progress-fill');
@@ -129,9 +143,10 @@ function renderJobs() {
     progress.append(fill); const stats = el('div', null, 'job-stats'); stats.append(el('span', percent == null ? (active ? '진행률 계산 중' : labels[job.status]) : `${percent.toFixed(1)}%`), el('span', `속도 ${job.speed || '—'} · ETA ${job.eta || '—'}`), el('span', `${job.downloaded || '—'} / ${job.total || '—'}`)); card.append(progress, stats);
     const actions = el('div', null, 'actions');
     const base = `/api/jobs/${encodeURIComponent(job.id)}`;
-    const configs = [['취소', 'cancel', () => request(`${base}/cancel`), !active], ['폴더 열기', 'reveal', () => request(`${base}/reveal`), !job.file], ['목록에서 제거', 'remove', () => request(base, undefined, 'DELETE'), !['done', 'failed'].includes(job.status)]];
+    const configs = [['취소', 'cancel', () => request(`${base}/cancel`), !active], ['폴더 열기', 'reveal', () => request(`${base}/reveal`), !job.file || job.fileMissing], ['목록에서 제거', 'remove', () => request(base, undefined, 'DELETE'), !['done', 'failed', 'cancelled'].includes(job.status)]];
     for (const [text, action, fn, disabled] of configs) { const b = button(text, `${action}:${job.id}`, fn, disabled); b.dataset.focusKey = `${action}:${job.id}`; actions.append(b); } card.append(actions);
     if (job.error) card.append(el('p', job.error, 'job-error'));
+    if (job.fileMissing) card.append(el('p', '파일 없음 · 파일이 이동되거나 삭제되었습니다.', 'job-error'));
     if (job.status === 'failed' || job.log?.length) { const d = details(`log:${job.id}`, '작업 로그'); d.append(el('pre', (job.log || []).join('\n') || '로그가 없습니다.')); card.append(d); }
     return card;
   }) : [empty('다운로드 대기열이 비어 있습니다', '분석 결과에서 화질이나 형식을 선택하세요.')]);
@@ -272,7 +287,7 @@ $('#reset-download-dir').addEventListener('click', () => run('settings', () => s
 $('#settings-form').addEventListener('submit', e => { e.preventDefault(); run('settings', async () => {
   const f = e.target.elements; const concurrentFragments = Number(f.concurrentFragments.value);
   if (!Number.isInteger(concurrentFragments) || concurrentFragments < 1 || concurrentFragments > 16) throw new Error('동시 조각 수는 1~16 정수로 입력하세요.');
-  const data = await saveFormSettings({ ...(!f.downloadDir.readOnly ? { downloadDir: f.downloadDir.value.trim() } : {}), browserVisible: f.browserVisible.checked, cookiesBrowser: f.cookiesBrowser.value, useLoginProfile: f.useLoginProfile.checked, concurrentFragments });
+  const data = await saveFormSettings({ ...(!f.downloadDir.readOnly ? { downloadDir: f.downloadDir.value.trim() } : {}), browserVisible: f.browserVisible.checked, cookiesBrowser: f.cookiesBrowser.value, useLoginProfile: f.useLoginProfile.checked, concurrentFragments, writeSubs: f.writeSubs.checked, subLangs: f.subLangs.value.trim() });
   state.settings = data.settings; settingsDirty = false; renderSettings(); message('설정을 저장했습니다.');
 }); });
 

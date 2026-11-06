@@ -41,6 +41,8 @@
           <label class="check"><input type="checkbox" name="useLoginProfile">로그인 프로필 사용</label>
           <button id="login-browser" type="button">로그인용 브라우저 열기 ↗</button><p class="hint">위에 입력한 첫 URL(비어 있으면 YouTube 로그인)을 엽니다. 로그인 후 창을 닫으면 "로그인 프로필 사용"이 켜진 동안 모든 단계에서 그 로그인 상태를 씁니다.</p>
           <label>동시 조각 수 <input name="concurrentFragments" type="number" min="1" max="16" step="1" value="4" required></label>
+          <label class="check"><input type="checkbox" name="writeSubs">자막 받기 (영상만, MP3 제외)</label>
+          <label>자막 언어<input name="subLangs" value="ko,en" placeholder="ko,en" maxlength="100" pattern="[\w.*+\-]+(,[\w.*+\-]+)*" title="ko,en 처럼 쉼표로 구분(공백 없이)" spellcheck="false" aria-describedby="sub-langs-hint"></label><p id="sub-langs-hint" class="hint">쉼표로 구분(예: ko,en). 자동 생성 자막도 받고, mp4/mkv에는 넣어 줍니다. 자막이 없으면 영상만 받습니다.</p>
           <button class="primary" type="submit">설정 저장</button>
         </form></section>
         <p class="aside-note">yt-dlp → 페이지 스캔 → 브라우저<br>앞 단계에서 찾으면 다음 단계는 건너뜁니다.</p>

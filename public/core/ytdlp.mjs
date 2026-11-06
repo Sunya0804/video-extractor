@@ -126,11 +126,20 @@ function safeName(title) {
 
 // 다운로드 인자(마지막이 '--', 그 뒤에 url을 붙인다).
 // title: 2·3단계 항목처럼 yt-dlp가 아는 제목이 의미 없을 때 쓸 파일 이름
+// 설정의 자막 언어 값 검사(PC·안드로이드 공용): 'ko,en', 'en.*', 'all,-live_chat' 등
+export const SUB_LANGS_RE = /^[\w.*+\-]+(,[\w.*+\-]+)*$/;
+
+// fmt.subLangs: 자막 언어(예: 'ko,en'). 비어 있거나 MP3(음성)이면 자막을 받지 않는다
 export function downloadArgs({ fmt, outDir, title, fragments = 4, access, pluginArgs = [] }) {
   const sep = outDir.includes('\\') ? '\\' : '/';
   const name = title ? `${safeName(title)} [%(id)s].%(ext)s` : '%(title).150B [%(id)s].%(ext)s';
+  const format = formatArgs(fmt);
+  const subs = fmt?.subLangs && fmt.format !== 'audio'
+    ? ['--write-subs', '--write-auto-subs', '--sub-langs', fmt.subLangs, ...(format.includes('--merge-output-format') ? ['--embed-subs'] : [])]
+    : [];
   return [
-    ...formatArgs(fmt),
+    ...format,
+    ...subs,
     '-o', outDir.replace(/[\\/]+$/, '') + sep + name,
     // --print는 조용한 모드를 켜므로 진행 출력과 후처리 로그를 다시 켠다
     '--no-quiet', '--progress', '--newline', '--no-colors', '--no-mtime', '--windows-filenames',

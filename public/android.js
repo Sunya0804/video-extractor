@@ -1,11 +1,12 @@
 // 안드로이드 앱용 transport: PC 서버(server.mjs)와 같은 API를 앱 안에서 처리한다.
 // 분석 로직은 public/core(PC와 공용), 실행 수단(yt-dlp·네트워크·WebView 캡처)은 네이티브 브리지(docs/android-bridge.md).
 import { scanPage, directTypeOf, classify } from './core/scan.mjs';
-import { extractArgs, parseExtract, downloadArgs, downloadLineHandler, errorLine, newId } from './core/ytdlp.mjs';
+import { extractArgs, parseExtract, downloadArgs, downloadLineHandler, errorLine, newId, SUB_LANGS_RE } from './core/ytdlp.mjs';
 import { checkDrm } from './core/drm.mjs';
 import { createSites } from './core/sites.mjs';
 import { newAnalysis, runAnalysis } from './core/pipeline.mjs';
 import { PLAY_SCRIPT } from './core/play.mjs';
+import { restoreDownloadResults, findDownloadCard } from './android-events.mjs';
 
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 const MAX_ACTIVE_JOBS = 2;
@@ -29,6 +30,7 @@ export function createAndroid(receive, connection) {
       let data; try { data = JSON.parse(json); } catch { return; }
       if (type === 'appUpdate') { appUpdate = data; buildTools(); emit('tools', { tools: state.tools, toolsBusy: state.toolsBusy }); }
       if (type === 'ytdlpLine') lineListeners.get(data.jobId)?.(data.line);
+      if (type === 'launch') handleLaunch(data);
     },
   };
   const call = (method, args = {}) => new Promise((resolve, reject) => {
@@ -41,7 +43,7 @@ export function createAndroid(receive, connection) {
   let info = null;
   const state = {
     tools: [], toolsBusy: false,
-    settings: { downloadDir: '', browserVisible: false, cookiesBrowser: '', useLoginProfile: true, concurrentFragments: 4, ...load('vx.settings', {}) },
+    settings: { downloadDir: '', browserVisible: false, cookiesBrowser: '', useLoginProfile: true, concurrentFragments: 4, writeSubs: false, subLangs: 'ko,en', ...load('vx.settings', {}) },
     analyses: [],
     jobs: load('vx.jobs', []),
   };
@@ -51,6 +53,21 @@ export function createAndroid(receive, connection) {
   const saveJobs = () => save('vx.jobs', state.jobs.filter((j) => ['done', 'failed', 'cancelled'].includes(j.status)).slice(0, 30));
   const toolLog = (line) => emit('toolLog', { line });
   const pluginArgs = () => (info?.pluginDir ? ['--plugin-dirs', info.pluginDir] : []);
+
+  function handleLaunch(data) {
+    if (data.url) {
+      const input = document.querySelector('#urls');
+      if (input) { input.value = data.url; input.dispatchEvent(new Event('input', { bubbles: true })); }
+      // 폼의 변경이나 버튼 busy 상태에 의존하지 않고 기존 분석 API를 쓴다.
+      request('/api/analyze', { url: data.url }).catch((e) => toolLog(`공유 링크 분석 실패: ${e.message}`));
+      input?.scrollIntoView({ block: 'center' });
+    }
+    if (data.jobId) {
+      const target = findDownloadCard(document, data.jobId) || document.querySelector('#jobs');
+      target?.scrollIntoView({ block: 'center' });
+      if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); }
+    }
+  }
 
   // 로그인 브라우저에서 받은 쿠키를 yt-dlp에도 쓴다
   async function withLoginCookies(url, access) {
@@ -126,13 +143,15 @@ export function createAndroid(receive, connection) {
     };
     const lines = downloadLineHandler({ onUpdate: update, onLog: (l) => { job.log.push(l); if (job.log.length > 40) job.log.shift(); } });
     lineListeners.set(job.id, (l) => lines.handle(l));
+    let nativeHandled = false;
     try {
       const access = await withLoginCookies(job._url, job._access || {});
       const args = downloadArgs({ fmt: job._fmt, outDir: info.downloadDir, title: job._title, fragments: state.settings.concurrentFragments, access, pluginArgs: pluginArgs() });
-      const r = await call('download', { jobId: job.id, url: job._url, args });
-      const file = lines.file();
+      const r = await call('download', { jobId: job.id, url: job._url, args, title: job.title, format: job.format });
+      nativeHandled = true;
+      const file = r.file || lines.file();
       if (r.exitCode === -2 || job._cancelled) Object.assign(job, { status: 'cancelled' });
-      else if (r.exitCode === 0) {
+      else if (r.exitCode === 0 || file) { // 자막만 실패해도 1로 끝나므로 최종 파일이 있으면 성공
         Object.assign(job, { status: 'done', percent: 100, file, speed: null, eta: null });
         if (file) call('mediaScan', { path: file }).catch(() => {});
       } else Object.assign(job, { status: 'failed', error: errorLine(r.err) });
@@ -142,6 +161,9 @@ export function createAndroid(receive, connection) {
     lineListeners.delete(job.id);
     emit('job', job);
     saveJobs();
+    // 네이티브 실행 전 실패도 알림. 먼저 저장해 알림을 누를 때 항목을 찾을 수 있게 한다.
+    if (!nativeHandled && job.status === 'failed') await call('notifyDownload', pub(job)).catch(() => {});
+    await call('ackDownloadResults', { ids: [job.id] }).catch(() => {});
     pumpJobs();
   }
   function createJob({ analysisId, itemId, format, height }) {
@@ -157,7 +179,7 @@ export function createAndroid(receive, connection) {
       status: 'queued', percent: null, speed: null, eta: null, downloaded: null, total: null,
       file: null, error: null, log: [], createdAt: Date.now(),
       _url: item.url, _access: item._access || {}, _title: item.stage > 1 ? item.title : null,
-      _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind },
+      _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, subLangs: state.settings.writeSubs ? state.settings.subLangs : '' },
     };
     state.jobs.unshift(job);
     emit('job', job);
@@ -241,8 +263,10 @@ export function createAndroid(receive, connection) {
       if (typeof body.browserVisible === 'boolean') s.browserVisible = body.browserVisible;
       if (typeof body.useLoginProfile === 'boolean') s.useLoginProfile = body.useLoginProfile;
       if (Number.isInteger(body.concurrentFragments) && body.concurrentFragments >= 1 && body.concurrentFragments <= 16) s.concurrentFragments = body.concurrentFragments;
+      if (typeof body.writeSubs === 'boolean') s.writeSubs = body.writeSubs;
+      if (typeof body.subLangs === 'string' && body.subLangs.length <= 100 && SUB_LANGS_RE.test(body.subLangs)) s.subLangs = body.subLangs;
       s.downloadDir = info.downloadDir; // 앱에서는 공용 Download/VideoExtractor 고정
-      save('vx.settings', { browserVisible: s.browserVisible, useLoginProfile: s.useLoginProfile, concurrentFragments: s.concurrentFragments });
+      save('vx.settings', { browserVisible: s.browserVisible, useLoginProfile: s.useLoginProfile, concurrentFragments: s.concurrentFragments, writeSubs: s.writeSubs, subLangs: s.subLangs });
       emit('settings', s);
       return { settings: s };
     }
@@ -265,11 +289,15 @@ export function createAndroid(receive, connection) {
       info = await call('init');
       appUpdate = info.appUpdate || appUpdate;
       state.settings.downloadDir = info.downloadDir;
+      state.jobs = restoreDownloadResults(state.jobs, info.downloadResults);
       // 앱을 다시 켜면 진행 중이던 작업은 끊겨 있다
       for (const j of state.jobs) if (!['done', 'failed', 'cancelled'].includes(j.status)) Object.assign(j, { status: 'failed', error: '앱이 종료되어 중단됨' });
       buildTools();
       connection('앱 엔진 준비됨', 'success');
       emit('state', snapshot());
+      saveJobs();
+      await call('ackDownloadResults', { ids: (info.downloadResults || []).map((job) => job.id) }).catch(() => {});
+      await call('uiReady');
       // 배포된 yt-dlp가 오래되면 YouTube가 실패하므로 하루 1회 자동 업데이트
       if (Date.now() - (load('vx.ytdlpCheckedAt', 0) || 0) > DAY) runInstall(['yt-dlp']);
       checkAppUpdate();
