@@ -19,7 +19,7 @@ DRM(Widevine·PlayReady·FairPlay)이 걸린 콘텐츠는 찾더라도 "DRM" 표
 | 방법 | 주소/파일 | 엔진 |
 |---|---|---|
 | **PC 프로그램** | 아래 "설치·실행" | PC의 yt-dlp·ffmpeg·deno·Edge |
-| **안드로이드 앱** | [Releases](https://github.com/Sunya0804/video-extractor/releases/latest)의 `VideoExtractor-x.y.z.apk` | 앱 안에 내장된 yt-dlp·ffmpeg·QuickJS, 3단계는 앱 내장 브라우저(WebView). PC 없이 폰에서 바로 받음 |
+| **안드로이드 앱** | [Releases](https://github.com/Sunya0804/video-extractor-releases/releases/latest)의 `VideoExtractor-x.y.z.apk` | 앱 안에 내장된 yt-dlp·ffmpeg·QuickJS, 3단계는 앱 내장 브라우저(WebView). PC 없이 폰에서 바로 받음 |
 | **웹(깃허브 io)** | https://sunya0804.github.io/video-extractor/ | 같은 PC에서 켜 둔 PC 프로그램(127.0.0.1:5280)에 연결해 동작. 처음 열 때 브라우저가 "로컬 네트워크 접근"을 물으면 허용 |
 
 화면은 세 곳 모두 같은 `public/`이고, 분석 로직(`public/core/`)도 PC와 앱이 같은 코드를 씁니다.
@@ -37,7 +37,7 @@ DRM(Widevine·PlayReady·FairPlay)이 걸린 콘텐츠는 찾더라도 "DRM" 표
 
 ## 설치·실행
 
-**권장: [Releases](https://github.com/Sunya0804/video-extractor/releases/latest)의 `VideoExtractor-Setup-<버전>.exe`를 설치하세요.**
+**권장: [Releases](https://github.com/Sunya0804/video-extractor-releases/releases/latest)의 `VideoExtractor-Setup-<버전>.exe`를 설치하세요.**
 예전 바로가기는 삭제하고, 실행 중인 예전 서버도 종료한 뒤 새 앱을 여세요. 새 앱은 시작 시 및 6시간마다 업데이트를 확인하고 자동으로 내려받으며 종료 시 적용합니다. 도구 패널에서 설치 준비 상태를 확인하고 [설치/업데이트]로 다시 시작할 수도 있습니다.
 
 앱의 도구는 사용자 데이터 폴더의 `bin/`, 설정·학습·로그인 프로필은 그 아래 `data/`에 저장합니다(Windows: `%APPDATA%/video-extractor`). 기존 프로젝트의 설정·학습은 그 폴더에서 `npm run app`으로 처음 실행하면 복사됩니다. 설치된 앱으로 옮길 때는 `VX_LEGACY_ROOT`를 기존 프로젝트 위치로 지정해 한 번 실행하세요. 기존 설정은 덮어쓰지 않습니다.

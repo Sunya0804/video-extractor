@@ -360,7 +360,7 @@ if (mockMode) {
   stream.onerror = () => {
     connection('연결 끊김 · 자동 재연결 중', 'failed');
     // 깃허브 io에서 열었는데 PC 서버가 꺼져 있으면 안내
-    if (API_BASE && !everConnected) message(`이 페이지는 PC에서 실행 중인 Video Extractor(${API_BASE})에 연결해서 동작합니다. PC에서 바로가기로 프로그램을 켜고, 브라우저가 "로컬 네트워크 접근"을 물으면 허용하세요. 휴대폰에서는 안드로이드 앱을 쓰세요. 설치 방법: https://github.com/Sunya0804/video-extractor`, true);
+    if (API_BASE && !everConnected) message(`이 페이지는 PC에서 실행 중인 Video Extractor(${API_BASE})에 연결해서 동작합니다. PC에서 바로가기로 프로그램을 켜고, 브라우저가 "로컬 네트워크 접근"을 물으면 허용하세요. 휴대폰에서는 안드로이드 앱을 쓰세요. 설치 파일: https://github.com/Sunya0804/video-extractor-releases/releases/latest`, true);
   };
   for (const type of ['state', 'tools', 'toolLog', 'analysis', 'job', 'jobRemoved', 'settings', 'sites']) stream.addEventListener(type, e => { try { receive(type, JSON.parse(e.data)); } catch (error) { message(`이벤트 처리 실패: ${error.message}`, true); } });
   // SSE already provides a state snapshot; GET is unnecessary and could overwrite newer events.
