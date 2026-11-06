@@ -3,7 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { DEFAULT_DOWNLOAD_DIR, safeDownloadDir, validateDownloadDir } from './lib/download-dir.mjs';
 import { ROOT, DATA_DIR, DESKTOP_UA, newId, openPath } from './lib/util.mjs';
 import { listTools, installTools } from './lib/tools.mjs';
 import { extract, startDownload } from './lib/ytdlp.mjs';
@@ -23,7 +23,7 @@ const state = {
   tools: [],
   toolsBusy: false,
   settings: {
-    downloadDir: path.join(os.homedir(), 'Downloads', 'VideoExtractor'),
+    downloadDir: DEFAULT_DOWNLOAD_DIR,
     browserVisible: false,
     cookiesBrowser: '',
     useLoginProfile: true,
@@ -34,15 +34,16 @@ const state = {
 };
 
 try { Object.assign(state.settings, JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'))); } catch {}
+state.settings.downloadDir = safeDownloadDir(state.settings.downloadDir) || DEFAULT_DOWNLOAD_DIR;
 
-async function saveSettings() {
+async function saveSettings(settings = state.settings) {
   await fsp.mkdir(DATA_DIR, { recursive: true });
-  await fsp.writeFile(SETTINGS_FILE, JSON.stringify(state.settings, null, 2));
+  await fsp.writeFile(SETTINGS_FILE, JSON.stringify(settings, null, 2));
 }
 
 // 밑줄로 시작하는 내부 필드(_access, _ctrl 등)는 화면으로 보내지 않는다
 const pub = (obj) => JSON.parse(JSON.stringify(obj, (k, v) => (k.startsWith('_') ? undefined : v)));
-const snapshot = () => pub({ tools: state.tools, toolsBusy: state.toolsBusy, settings: state.settings, analyses: state.analyses, jobs: state.jobs, sites: sites.list() });
+const snapshot = () => pub({ tools: state.tools, toolsBusy: state.toolsBusy, settings: state.settings, capabilities: { selectDownloadDir: !!appController?.selectDownloadDir }, analyses: state.analyses, jobs: state.jobs, sites: sites.list() });
 
 // ---------- SSE ----------
 const clients = new Set();
@@ -226,24 +227,12 @@ async function serveStatic(req, res, pathname) {
 }
 
 const SETTING_RULES = {
-  downloadDir: (v) => safeDownloadDir(v),
+  downloadDir: (v) => typeof v === 'string' ? v : undefined,
   browserVisible: (v) => typeof v === 'boolean' ? v : undefined,
   cookiesBrowser: (v) => ['', 'edge', 'chrome', 'firefox'].includes(v) ? v : undefined,
   useLoginProfile: (v) => typeof v === 'boolean' ? v : undefined,
   concurrentFragments: (v) => Number.isInteger(v) && v >= 1 && v <= 16 ? v : undefined,
 };
-
-// 다운로드 폴더: 절대 경로만, UNC·장치 경로(\\server, \\?\)와 시작프로그램 폴더는 거부
-function safeDownloadDir(v) {
-  if (typeof v !== 'string') return undefined;
-  const raw = v.trim();
-  // Windows는 "C:\..." 처럼 드라이브 문자로 시작하는 경로만(\\server, \\?\, \폴더 같은 형태 거부)
-  if (process.platform === 'win32' ? !/^[A-Za-z]:[\\/]/.test(raw) : !path.isAbsolute(raw)) return undefined;
-  const dir = path.resolve(raw);
-  if (/^[\\/]{2}/.test(dir)) return undefined;
-  if (/[\\/]Start Menu[\\/]Programs[\\/]Startup([\\/]|$)/i.test(dir)) return undefined;
-  return dir;
-}
 
 // 폴더를 만들고 실제 디렉터리인지 확인한 뒤에만 탐색기로 연다
 async function ensureDir(dir) {
@@ -304,23 +293,27 @@ async function handleApi(req, res, url, remote = false) {
       return send(res, 200, { ok: true });
     }
   }
+  if (m === 'POST' && p === '/api/settings/select-download-dir') {
+    if (remote) return send(res, 403, { error: '폴더 선택은 PC에서 연 화면(127.0.0.1)에서만 사용할 수 있습니다.' });
+    if (!appController?.selectDownloadDir) return send(res, 409, { error: '폴더 선택은 Electron 앱에서 사용할 수 있습니다. 경로를 직접 입력하세요.' });
+    const downloadDir = await appController.selectDownloadDir(state.settings.downloadDir);
+    return send(res, 200, { downloadDir: downloadDir ?? null });
+  }
   if (m === 'POST' && p === '/api/settings') {
     const body = await readJson(req);
     if (remote && 'downloadDir' in body && body.downloadDir !== state.settings.downloadDir) {
       return send(res, 403, { error: '다운로드 폴더는 PC에서 연 화면(127.0.0.1)에서만 바꿀 수 있습니다' });
     }
-    if ('downloadDir' in body && body.downloadDir !== state.settings.downloadDir) {
-      const dir = safeDownloadDir(body.downloadDir);
-      if (!dir) return send(res, 400, { error: '다운로드 폴더 경로가 올바르지 않습니다(절대 경로, 네트워크·시작프로그램 폴더 불가)' });
-      try { await ensureDir(dir); } catch (e) { return send(res, 400, { error: `다운로드 폴더를 만들 수 없습니다: ${e.message}` }); }
-    }
+    const next = { ...state.settings };
     for (const [k, rule] of Object.entries(SETTING_RULES)) {
       if (!(k in body)) continue;
       const v = rule(body[k]);
       if (v === undefined) return send(res, 400, { error: `설정 값이 올바르지 않습니다: ${k}` });
-      state.settings[k] = v;
+      next[k] = v;
     }
-    await saveSettings();
+    if ('downloadDir' in body) next.downloadDir = await validateDownloadDir(body.downloadDir);
+    await saveSettings(next);
+    state.settings = next;
     emit('settings', state.settings);
     return send(res, 200, { settings: state.settings });
   }

@@ -1,3 +1,4 @@
+import { extractUrls } from './core/urls.mjs';
 const $ = selector => document.querySelector(selector);
 const mockMode = new URLSearchParams(location.search).get('mock') === '1';
 const state = { tools: [], toolsBusy: false, settings: {}, analyses: [], jobs: [], sites: [] };
@@ -55,6 +56,7 @@ function renderBusy() {
   $('#analyze-button').disabled = busy.has('analyze');
   for (const id of ['install-all', 'install-required']) $( `#${id}`).disabled = state.toolsBusy || busy.has('install');
   $('#settings-form button[type=submit]').disabled = busy.has('settings');
+  for (const id of ['choose-download-dir', 'reset-download-dir']) $(`#${id}`).disabled = busy.has('settings');
 }
 function preserveDetails(container, build) {
   const open = new Set([...container.querySelectorAll('details[open]')].map(d => d.dataset.key));
@@ -146,6 +148,13 @@ function renderTools() {
   $('#tool-busy').textContent = state.toolsBusy ? '· 설치 진행 중' : ''; renderBusy();
 }
 function renderSettings() {
+  const canEditDir = isLocal && !isAndroid && !mockMode;
+  const dir = $('#settings-form').elements.downloadDir;
+  dir.readOnly = !canEditDir;
+  $('#choose-download-dir').hidden = !canEditDir || !state.capabilities?.selectDownloadDir;
+  $('#reset-download-dir').hidden = !canEditDir;
+  $('#download-dir-current').textContent = state.settings.downloadDir ? `현재 저장 위치: ${state.settings.downloadDir}` : '현재 저장 위치를 확인 중입니다.';
+  $('#download-dir-hint').textContent = isAndroid ? '앱은 공용 Download/VideoExtractor 폴더에 저장합니다.' : !isLocal ? '다운로드 폴더는 PC에서 연 화면(127.0.0.1)에서 변경하세요.' : '빈칸으로 저장하면 기본 폴더(Downloads/VideoExtractor)로 돌아갑니다.';
   if (settingsDirty) return;
   for (const [key, value] of Object.entries(state.settings)) { const input = $('#settings-form').elements.namedItem(key); if (!input) continue; if (input.type === 'checkbox') input.checked = Boolean(value); else input.value = value ?? ''; }
 }
@@ -176,12 +185,30 @@ function connection(text, status) { $('#connection').textContent = text; $('#con
 function validUrl(value) { const u = new URL(value); if (!['http:', 'https:'].includes(u.protocol)) throw new Error('http 또는 https URL을 입력하세요.'); return u.href; }
 $('#analyze-form').addEventListener('submit', event => {
   event.preventDefault(); run('analyze', async () => {
-    const lines = $('#urls').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-    if (!lines.length) throw new Error('분석할 URL을 입력하세요.');
+    const urls = extractUrls($('#urls').value);
+    if (!urls.length) throw new Error('분석할 http(s) URL을 찾지 못했습니다.');
     let ok = 0; const errors = [];
-    for (const line of lines) { try { const url = validUrl(line); await request('/api/analyze', { url }); ok++; } catch (e) { errors.push(`${line}: ${e.message}`); } }
+    for (const line of urls) { try { const url = validUrl(line); await request('/api/analyze', { url }); ok++; } catch (e) { errors.push(`${line}: ${e.message}`); } }
+    if (!errors.length) $('#urls').value = '';
     message(`${ok}개 분석 요청 완료${errors.length ? '\n' + errors.join('\n') : ''}`, errors.length > 0);
   });
+});
+// 받은 텍스트에 URL이 있으면 입력칸에 넣고 바로 분석한다(붙여넣기 버튼·끌어놓기).
+function analyzeText(text) {
+  const urls = extractUrls(text);
+  if (!urls.length) { message('URL을 찾지 못했습니다.', true); return; }
+  $('#urls').value = urls.join('\n'); $('#analyze-form').requestSubmit();
+}
+$('#paste-analyze').addEventListener('click', async () => {
+  try { analyzeText(await navigator.clipboard.readText()); }
+  catch { $('#urls').focus(); message('클립보드를 읽지 못했습니다. 입력칸에 Ctrl+V로 붙여넣으세요.', true); }
+});
+const composer = $('.composer');
+composer.addEventListener('dragover', e => { e.preventDefault(); composer.classList.add('dropping'); });
+composer.addEventListener('dragleave', e => { if (!composer.contains(e.relatedTarget)) composer.classList.remove('dropping'); });
+composer.addEventListener('drop', e => {
+  e.preventDefault(); composer.classList.remove('dropping');
+  analyzeText(e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'));
 });
 $('#urls').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#analyze-form').requestSubmit(); } });
 // 보조 패널(도구·학습된 사이트·설정)은 탭으로 하나씩 보여 준다. 고른 탭은 기억한다.
@@ -215,14 +242,41 @@ $('#shutdown').addEventListener('click', () => run('shutdown', async () => {
 $('#login-browser').addEventListener('click', () => run('login', async () => { const first = $('#urls').value.split(/\r?\n/).map(s => s.trim()).find(Boolean); const target = first ? validUrl(first) : 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F'; await request('/api/login-browser', { url: target }); message(first ? '로그인용 브라우저를 열었습니다. 로그인한 뒤 창을 닫으세요.' : 'YouTube 로그인 창을 열었습니다. 로그인한 뒤 창을 닫으면 성인 인증·멤버십 영상도 받을 수 있습니다.'); }));
 $('#settings-form').addEventListener('input', () => { settingsDirty = true; });
 $('#settings-form').addEventListener('change', () => { settingsDirty = true; });
+function downloadDirError(text = '') {
+  $('#download-dir-error').textContent = text;
+  $('#download-dir-error').hidden = !text;
+  $('#settings-form').elements.downloadDir.setAttribute('aria-invalid', String(!!text));
+}
+async function saveFormSettings(body) {
+  downloadDirError();
+  try { return await request('/api/settings', body); }
+  catch (error) { downloadDirError(error.message); throw error; }
+}
+async function saveDownloadDir(downloadDir) {
+  const data = await saveFormSettings({ downloadDir });
+  state.settings = data.settings;
+  $('#settings-form').elements.downloadDir.value = data.settings.downloadDir;
+  renderSettings();
+  message('다운로드 폴더를 저장했습니다.');
+}
+$('#choose-download-dir').addEventListener('click', () => run('settings', async () => {
+  downloadDirError();
+  const data = await request('/api/settings/select-download-dir', {});
+  if (data.downloadDir != null) {
+    $('#settings-form').elements.downloadDir.value = data.downloadDir;
+    settingsDirty = true;
+    await saveDownloadDir(data.downloadDir);
+  }
+}));
+$('#reset-download-dir').addEventListener('click', () => run('settings', () => saveDownloadDir('')));
 $('#settings-form').addEventListener('submit', e => { e.preventDefault(); run('settings', async () => {
   const f = e.target.elements; const concurrentFragments = Number(f.concurrentFragments.value);
   if (!Number.isInteger(concurrentFragments) || concurrentFragments < 1 || concurrentFragments > 16) throw new Error('동시 조각 수는 1~16 정수로 입력하세요.');
-  const data = await request('/api/settings', { downloadDir: f.downloadDir.value.trim(), browserVisible: f.browserVisible.checked, cookiesBrowser: f.cookiesBrowser.value, useLoginProfile: f.useLoginProfile.checked, concurrentFragments });
+  const data = await saveFormSettings({ ...(!f.downloadDir.readOnly ? { downloadDir: f.downloadDir.value.trim() } : {}), browserVisible: f.browserVisible.checked, cookiesBrowser: f.cookiesBrowser.value, useLoginProfile: f.useLoginProfile.checked, concurrentFragments });
   state.settings = data.settings; settingsDirty = false; renderSettings(); message('설정을 저장했습니다.');
 }); });
 
-renderAnalyses(); renderJobs(); renderTools();
+renderAnalyses(); renderJobs(); renderTools(); renderSettings();
 if (mockMode) {
   $('#mock-banner').hidden = false;
   try { const { createMock } = await import('./dev-mock.js'); transport = createMock(receive, connection); } catch (e) { message(`목 모드 시작 실패: ${e.message}`, true); }

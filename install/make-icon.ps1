@@ -3,6 +3,9 @@ Add-Type -AssemblyName System.Drawing
 $root = Split-Path -Parent $PSScriptRoot
 
 function New-IconPng([int]$size) {
+  $outputSize = $size
+  # 작은 ICO도 큰 원본에서 축소해 모서리와 삼각형을 부드럽게 그린다.
+  $size = [Math]::Max(256, $size)
   $bmp = New-Object System.Drawing.Bitmap $size, $size
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $g.SmoothingMode = 'AntiAlias'
@@ -28,17 +31,35 @@ function New-IconPng([int]$size) {
   $g.FillPolygon($white, $tri)
   # 아래쪽 내려받기 막대
   $g.FillRectangle($white, 64 * $s, 182 * $s, 128 * $s, 18 * $s)
+  $bg.Dispose()
+  $path.Dispose()
   $g.Dispose()
+  if ($outputSize -ne $size) {
+    $small = New-Object System.Drawing.Bitmap $outputSize, $outputSize
+    $resize = [System.Drawing.Graphics]::FromImage($small)
+    $resize.InterpolationMode = 'HighQualityBicubic'
+    $resize.PixelOffsetMode = 'HighQuality'
+    $resize.DrawImage($bmp, 0, 0, $outputSize, $outputSize)
+    $resize.Dispose()
+    $bmp.Dispose()
+    $bmp = $small
+  }
   $ms = New-Object System.IO.MemoryStream
   $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
   $bmp.Dispose()
-  return ,$ms.ToArray()
+  $bytes = $ms.ToArray()
+  $ms.Dispose()
+  return ,$bytes
 }
 
-$sizes = 256, 64, 48, 32, 16
+$sizes = 256, 128, 64, 48, 32, 24, 16
 $images = @{}
 foreach ($sz in $sizes) { $images[$sz] = New-IconPng $sz }
-[System.IO.File]::WriteAllBytes((Join-Path $root 'public\icon.png'), $images[64])
+# 같은 디자인을 공유하며 고밀도 헤더와 Android xxxhdpi에서도 확대하지 않는다.
+[System.IO.File]::WriteAllBytes((Join-Path $root 'public\icon.png'), $images[256])
+$androidIcons = Join-Path $root 'android\app\src\main\res\drawable-nodpi'
+[System.IO.Directory]::CreateDirectory($androidIcons) | Out-Null
+[System.IO.File]::WriteAllBytes((Join-Path $androidIcons 'ic_launcher.png'), $images[256])
 
 # ICO: 헤더 + 크기별 PNG 항목
 $out = New-Object System.IO.MemoryStream
@@ -55,4 +76,6 @@ foreach ($sz in $sizes) {
 foreach ($sz in $sizes) { $bw.Write($images[$sz]) }
 $bw.Flush()
 [System.IO.File]::WriteAllBytes((Join-Path $PSScriptRoot 'icon.ico'), $out.ToArray())
+$bw.Dispose()
+$out.Dispose()
 Write-Host '아이콘 생성 완료'

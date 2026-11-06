@@ -10,13 +10,13 @@
   <script type="module" src="./app.js"></script>
 </head>
 <body>
-  <header class="topbar"><a class="brand" href="./"><span class="brand-mark">↓</span>Video Extractor</a><span class="tag">영상 추출 워크스페이스</span><span id="connection" class="chip pending" role="status">연결 중</span><button id="shutdown" class="small" type="button" title="백그라운드 서버를 끕니다. 바탕화면 바로가기로 다시 켤 수 있습니다.">프로그램 종료</button></header>
+  <header class="topbar"><a class="brand" href="./"><img class="brand-mark" src="./icon.png" width="28" height="28" alt="">Video Extractor</a><span class="tag">영상 추출 워크스페이스</span><span id="connection" class="chip pending" role="status">연결 중</span><button id="shutdown" class="small" type="button" title="백그라운드 서버를 끕니다. 바탕화면 바로가기로 다시 켤 수 있습니다.">프로그램 종료</button></header>
   <main>
     <div id="mock-banner" class="notice" hidden>미리보기 모드 · 가상 데이터로 동작합니다. 실제 파일은 다운로드하지 않습니다.</div>
     <div id="required-banner" class="notice warning" hidden><span id="required-message"></span><button id="install-required" class="primary">필수 도구 설치</button></div>
     <section class="composer panel">
       <div class="eyebrow">새 분석</div><h1>링크에서 영상을 찾아보세요.</h1>
-      <form id="analyze-form"><label class="sr-only" for="urls">분석할 URL</label><div class="input-row"><textarea id="urls" rows="2" placeholder="영상 또는 페이지 URL을 붙여넣으세요" required spellcheck="false"></textarea><button class="primary" id="analyze-button" type="submit">분석 <span aria-hidden="true">↗</span></button></div><p class="hint">여러 URL은 줄바꿈으로 구분 · Enter 분석 · Shift + Enter 줄바꿈</p></form>
+      <form id="analyze-form"><label class="sr-only" for="urls">분석할 URL</label><div class="input-row"><textarea id="urls" rows="2" placeholder="영상 또는 페이지 URL을 붙여넣으세요" required spellcheck="false"></textarea><div class="input-buttons"><button class="primary" id="analyze-button" type="submit">분석 <span aria-hidden="true">↗</span></button><button id="paste-analyze" type="button" title="클립보드의 링크를 붙여넣고 바로 분석합니다">붙여넣고 분석</button></div></div><p class="hint">여러 URL은 줄바꿈으로 구분 · Enter 분석 · Shift + Enter 줄바꿈 · 링크를 이 칸에 끌어다 놓아도 됩니다</p></form>
     </section>
     <div id="feedback" role="status" aria-live="polite" hidden></div>
     <div class="workspace">
@@ -29,7 +29,13 @@
         <section id="panel-tools" role="tabpanel" aria-labelledby="tab-tools" class="panel side-panel"><div class="section-head"><h2>도구 상태</h2><button id="install-all" class="small">설치/업데이트</button></div><div id="tools"></div><details id="tool-details"><summary>설치 로그 <span id="tool-busy"></span></summary><pre id="tool-log" role="log" aria-label="도구 설치 로그">아직 설치 기록이 없습니다.</pre></details></section>
         <section id="panel-sites" role="tabpanel" aria-labelledby="tab-sites" class="panel side-panel"><div class="section-head"><h2>학습된 사이트 <span id="site-count" class="count">0</span></h2></div><div id="sites"></div><p class="hint">2·3단계로 성공한 사이트는 다음부터 그 단계부터 시도합니다.</p></section>
         <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" class="panel side-panel"><h2>설정</h2><form id="settings-form" class="settings">
-          <label>다운로드 폴더<input name="downloadDir" placeholder="서버 기본 다운로드 폴더"></label>
+          <label>다운로드 폴더<input name="downloadDir" placeholder="빈칸이면 기본 다운로드 폴더" aria-describedby="download-dir-current download-dir-hint download-dir-error" spellcheck="false"></label>
+          <div class="download-dir-controls">
+            <div class="download-dir-actions"><button id="choose-download-dir" type="button" hidden>폴더 선택…</button><button id="reset-download-dir" type="button" hidden>기본 폴더로</button></div>
+            <p id="download-dir-current" aria-live="polite">현재 저장 위치를 확인 중입니다.</p>
+            <p id="download-dir-hint">빈칸으로 저장하면 기본 폴더(Downloads/VideoExtractor)로 돌아갑니다.</p>
+            <p id="download-dir-error" role="alert" hidden></p>
+          </div>
           <label>쿠키 브라우저<select name="cookiesBrowser"><option value="">사용 안 함</option><option value="edge">Edge</option><option value="chrome">Chrome</option><option value="firefox">Firefox</option></select></label>
           <label class="check"><input type="checkbox" name="browserVisible">브라우저 창 보이기</label>
           <label class="check"><input type="checkbox" name="useLoginProfile">로그인 프로필 사용</label>
