@@ -186,8 +186,8 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
     companion object {
         const val ACTION_INSTALL_STATUS = "com.sunya0804.videoextractor.INSTALL_STATUS"
         const val SIX_HOURS = 6 * 60 * 60 * 1000L
-        const val LATEST = "https://api.github.com/repos/Sunya0804/video-extractor/releases/latest"
-        const val RELEASES = "https://api.github.com/repos/Sunya0804/video-extractor/releases?per_page=30"
+        const val LATEST = "https://api.github.com/repos/Sunya0804/video-extractor-releases/releases/latest"
+        const val RELEASES = "https://api.github.com/repos/Sunya0804/video-extractor-releases/releases?per_page=30"
         /** 릴리스 노트 Markdown을 대화상자에 보일 일반 텍스트로 */
         fun plain(markdown: String) = markdown.replace("\r", "")
             .replace(Regex("^#+\\s*", RegexOption.MULTILINE), "")
