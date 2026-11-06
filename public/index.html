@@ -43,6 +43,10 @@
           <label>동시 조각 수 <input name="concurrentFragments" type="number" min="1" max="16" step="1" value="4" required></label>
           <label class="check"><input type="checkbox" name="writeSubs">자막 받기 (영상만, MP3 제외)</label>
           <label>자막 언어<input name="subLangs" value="ko,en" placeholder="ko,en" maxlength="100" pattern="[\w.*+\-]+(,[\w.*+\-]+)*" title="ko,en 처럼 쉼표로 구분(공백 없이)" spellcheck="false" aria-describedby="sub-langs-hint"></label><p id="sub-langs-hint" class="hint">쉼표로 구분(예: ko,en). 자동 생성 자막도 받고, mp4/mkv에는 넣어 줍니다. 자막이 없으면 영상만 받습니다.</p>
+          <label>파일 이름<select name="nameStyle"><option value="title">제목 [ID]</option><option value="channel">채널명 - 제목 [ID]</option><option value="date">날짜(YYYY-MM-DD)_제목 [ID]</option></select></label>
+          <label class="check"><input type="checkbox" name="channelDir">채널별 하위 폴더에 저장</label>
+          <label>최대 속도<input name="rateLimit" placeholder="빈칸이면 제한 없음 (예: 5M, 500K)" maxlength="12" pattern="\d{1,6}(\.\d{1,3})?[KMGkmg]?" title="숫자 뒤에 K·M·G (초당 바이트), 예: 5M, 500K" spellcheck="false"></label>
+          <label>동시 다운로드 수 <input name="concurrentDownloads" type="number" min="1" max="5" step="1" value="2" required></label>
           <button class="primary" type="submit">설정 저장</button>
         </form></section>
         <p class="aside-note">yt-dlp → 페이지 스캔 → 브라우저<br>앞 단계에서 찾으면 다음 단계는 건너뜁니다.</p>

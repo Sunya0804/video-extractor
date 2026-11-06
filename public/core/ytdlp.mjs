@@ -124,15 +124,32 @@ function safeName(title) {
   return title.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 150).replace(/%/g, '%%') || 'video';
 }
 
-// 다운로드 인자(마지막이 '--', 그 뒤에 url을 붙인다).
-// title: 2·3단계 항목처럼 yt-dlp가 아는 제목이 의미 없을 때 쓸 파일 이름
 // 설정의 자막 언어 값 검사(PC·안드로이드 공용): 'ko,en', 'en.*', 'all,-live_chat' 등
 export const SUB_LANGS_RE = /^[\w.*+\-]+(,[\w.*+\-]+)*$/;
+// 최대 속도(yt-dlp --limit-rate, 초당 바이트): '500K', '5M', '1.5M'
+export const RATE_RE = /^\d{1,6}(\.\d{1,3})?[KMG]?$/i;
+// 파일 이름 규칙: 제목 [ID] / 채널명 - 제목 [ID] / 날짜_제목 [ID]
+export const NAME_STYLES = ['title', 'channel', 'date'];
 
-// fmt.subLangs: 자막 언어(예: 'ko,en'). 비어 있거나 MP3(음성)이면 자막을 받지 않는다
+// 설정 → 다운로드 작업(job._fmt)에 담을 값. 작업을 만들 때의 설정을 쓴다
+export function downloadPrefs(s = {}) {
+  return { subLangs: s.writeSubs ? s.subLangs : '', nameStyle: s.nameStyle, channelDir: !!s.channelDir, rateLimit: s.rateLimit || '' };
+}
+
+const CHANNEL = '%(channel,uploader|unknown).80B';
+// ID를 늘 붙여, 채널·제목·날짜가 같은 다른 영상이 "이미 받음"으로 건너뛰어지지 않게 한다
+function outputName(fmt, title) {
+  const t = title ? safeName(title) : '%(title).150B';
+  const prefix = fmt?.nameStyle === 'channel' ? `${CHANNEL} - ` : fmt?.nameStyle === 'date' ? '%(upload_date>%Y-%m-%d|unknown)s_' : '';
+  return `${prefix}${t} [%(id)s].%(ext)s`;
+}
+
+// 다운로드 인자(마지막이 '--', 그 뒤에 url을 붙인다).
+// title: 2·3단계 항목처럼 yt-dlp가 아는 제목이 의미 없을 때 쓸 파일 이름
+// fmt: formatArgs 값 + downloadPrefs 값. subLangs가 비어 있거나 MP3(음성)이면 자막을 받지 않는다
 export function downloadArgs({ fmt, outDir, title, fragments = 4, access, pluginArgs = [] }) {
   const sep = outDir.includes('\\') ? '\\' : '/';
-  const name = title ? `${safeName(title)} [%(id)s].%(ext)s` : '%(title).150B [%(id)s].%(ext)s';
+  const name = (fmt?.channelDir ? CHANNEL + sep : '') + outputName(fmt, title);
   const format = formatArgs(fmt);
   const subs = fmt?.subLangs && fmt.format !== 'audio'
     ? ['--write-subs', '--write-auto-subs', '--sub-langs', fmt.subLangs, ...(format.includes('--merge-output-format') ? ['--embed-subs'] : [])]
@@ -140,6 +157,7 @@ export function downloadArgs({ fmt, outDir, title, fragments = 4, access, plugin
   return [
     ...format,
     ...subs,
+    ...(fmt?.rateLimit ? ['--limit-rate', fmt.rateLimit] : []),
     '-o', outDir.replace(/[\\/]+$/, '') + sep + name,
     // --print는 조용한 모드를 켜므로 진행 출력과 후처리 로그를 다시 켠다
     '--no-quiet', '--progress', '--newline', '--no-colors', '--no-mtime', '--windows-filenames',

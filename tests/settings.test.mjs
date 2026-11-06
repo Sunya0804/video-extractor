@@ -65,6 +65,17 @@ test('설정 API는 실제 경로를 저장하고 오류 때 설정을 보존하
     return { status: response.status, body: await response.json() };
   };
   assert.equal((await state()).settings.downloadDir, DEFAULT_DOWNLOAD_DIR);
+  assert.equal((await state()).settings.concurrentDownloads, 2);
+  for (const concurrentDownloads of [0, 6, 1.5, '3', null]) {
+    assert.equal((await post('/api/settings', { concurrentDownloads })).status, 400);
+    assert.equal((await state()).settings.concurrentDownloads, 2);
+  }
+  for (const concurrentDownloads of [5, 1, 2]) {
+    const result = await post('/api/settings', { concurrentDownloads });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.settings.concurrentDownloads, concurrentDownloads);
+    assert.equal(JSON.parse(await fs.readFile(path.join(root, 'data/settings.json'), 'utf8')).concurrentDownloads, concurrentDownloads);
+  }
   assert.equal((await state()).capabilities.selectDownloadDir, false);
   assert.equal((await post('/api/settings/select-download-dir')).status, 409);
 

@@ -6,18 +6,18 @@ import path from 'node:path';
 import { DEFAULT_DOWNLOAD_DIR, safeDownloadDir, validateDownloadDir } from './lib/download-dir.mjs';
 import { ROOT, DATA_DIR, DESKTOP_UA, newId, openPath } from './lib/util.mjs';
 import { listTools, installTools } from './lib/tools.mjs';
-import { extract, startDownload, SUB_LANGS_RE } from './lib/ytdlp.mjs';
+import { extract, startDownload, SUB_LANGS_RE, RATE_RE, NAME_STYLES, downloadPrefs } from './lib/ytdlp.mjs';
 import { scanPage } from './lib/scan.mjs';
 import { sites } from './lib/sites.mjs';
 import { newAnalysis, runAnalysis } from './public/core/pipeline.mjs';
 import { capture, openLoginBrowser, profileCookies, TMP_DIR } from './lib/browser.mjs';
 import { checkDrm } from './lib/drm.mjs';
 import { createJobHistory, isFinishedJob, jobFileStatus } from './lib/job-history.mjs';
+import { DEFAULT_CONCURRENT_DOWNLOADS, concurrentDownloadLimit, validConcurrentDownloads, pumpDownloadQueue } from './public/core/download-queue.mjs';
 
 const PORT = Number(process.env.PORT) || 5280;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-const MAX_ACTIVE_JOBS = 2;
 const jobHistory = createJobHistory(path.join(DATA_DIR, 'jobs.json'));
 
 // ---------- 상태 ----------
@@ -30,8 +30,12 @@ const state = {
     cookiesBrowser: '',
     useLoginProfile: true,
     concurrentFragments: 4,
+    concurrentDownloads: DEFAULT_CONCURRENT_DOWNLOADS,
     writeSubs: false,
     subLangs: 'ko,en',
+    nameStyle: 'title',
+    channelDir: false,
+    rateLimit: '',
   },
   analyses: [], // 최신이 앞
   jobs: [],     // 최신이 앞
@@ -39,6 +43,7 @@ const state = {
 
 try { Object.assign(state.settings, JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'))); } catch {}
 state.settings.downloadDir = safeDownloadDir(state.settings.downloadDir) || DEFAULT_DOWNLOAD_DIR;
+state.settings.concurrentDownloads = concurrentDownloadLimit(state.settings.concurrentDownloads);
 state.jobs = await jobHistory.load();
 
 async function saveSettings(settings = state.settings) {
@@ -154,18 +159,10 @@ function finishJob(job) {
 }
 
 function pumpJobs() {
-  const active = state.jobs.filter((j) => j.status === 'downloading' || j.status === 'merging').length;
-  let slots = MAX_ACTIVE_JOBS - active;
-  for (const job of [...state.jobs].reverse()) {
-    if (slots <= 0) break;
-    if (job.status !== 'queued') continue;
-    slots--;
-    launchJob(job);
-  }
+  pumpDownloadQueue(state.jobs, state.settings.concurrentDownloads, launchJob);
 }
 
 async function launchJob(job) {
-  job.status = 'downloading';
   emit('job', job);
   try { await fsp.mkdir(state.settings.downloadDir, { recursive: true }); }
   catch (e) { Object.assign(job, { status: 'failed', error: `다운로드 폴더를 만들지 못함: ${e.message}` }); return finishJob(job); }
@@ -196,7 +193,7 @@ function createJob({ analysisId, itemId, format, height }) {
     status: 'queued', percent: null, speed: null, eta: null, downloaded: null, total: null,
     file: null, error: null, log: [], createdAt: Date.now(),
     _url: item.url, _access: item._access || {}, _title: item.stage > 1 ? item.title : null,
-    _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, subLangs: state.settings.writeSubs ? state.settings.subLangs : '' },
+    _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, ...downloadPrefs(state.settings) },
   };
   state.jobs.unshift(job);
   emit('job', job);
@@ -247,8 +244,12 @@ const SETTING_RULES = {
   cookiesBrowser: (v) => ['', 'edge', 'chrome', 'firefox'].includes(v) ? v : undefined,
   useLoginProfile: (v) => typeof v === 'boolean' ? v : undefined,
   concurrentFragments: (v) => Number.isInteger(v) && v >= 1 && v <= 16 ? v : undefined,
+  concurrentDownloads: (v) => validConcurrentDownloads(v) ? v : undefined,
   writeSubs: (v) => typeof v === 'boolean' ? v : undefined,
   subLangs: (v) => typeof v === 'string' && v.length <= 100 && SUB_LANGS_RE.test(v) ? v : undefined,
+  nameStyle: (v) => NAME_STYLES.includes(v) ? v : undefined,
+  channelDir: (v) => typeof v === 'boolean' ? v : undefined,
+  rateLimit: (v) => v === '' || (typeof v === 'string' && RATE_RE.test(v)) ? v : undefined,
 };
 
 // 폴더를 만들고 실제 디렉터리인지 확인한 뒤에만 탐색기로 연다
@@ -344,6 +345,7 @@ async function handleApi(req, res, url, remote = false) {
     await saveSettings(next);
     state.settings = next;
     emit('settings', state.settings);
+    pumpJobs();
     return send(res, 200, { settings: state.settings });
   }
   if (m === 'POST' && p === '/api/login-browser') {

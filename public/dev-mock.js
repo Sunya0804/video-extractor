@@ -14,7 +14,7 @@ export function createMock(receive, connection) {
       { id: 'scan-demo', url: 'https://example.com/film/a-quiet-morning', status: 'done', createdAt: now, stages: stages(['failed', 'success', 'skipped']), items: [item('morning', '조용한 아침, 도시를 걷다 | A quiet morning')], error: null },
       { id: 'running-demo', url: 'https://example.com/watch/exploring', status: 'running', createdAt: now - 1000, stages: stages(['failed', 'running', 'pending']), items: [], error: null },
       { id: 'drm-demo', url: 'https://example.com/premium/documentary', status: 'done', createdAt: now - 2000, stages: stages(['success', 'skipped', 'skipped']), items: [{ ...item('premium', '프리미엄 다큐멘터리 · DRM 보호 콘텐츠', true), stage: 1 }], error: null },
-      { id: 'playlist-demo', url: 'https://example.com/playlist/weekend', status: 'done', createdAt: now - 3000, stages: stages(['success', 'skipped', 'skipped']), items: [{ ...item('playlist', '주말 여행 모음 · 재생목록 항목', false, []), stage: 1 }], error: null }
+      { id: 'playlist-demo', url: 'https://example.com/playlist/weekend', status: 'done', createdAt: now + 1000, stages: stages(['success', 'skipped', 'skipped']), items: Array.from({ length: 65 }, (_, i) => ({ ...item(`playlist-${i + 1}`, `주말 여행 ${String(i + 1).padStart(2, '0')} · 바다와 숲에서 보낸 하루`, i === 5, []), stage: 1, playlist: '주말 여행 모음 · 65개 영상', duration: 180 + i * 13 })), error: null }
     ], jobs: []
   };
   const job = (id, status, title) => ({ id, analysisId: 'scan-demo', itemId: 'morning', title, format: 'best', status, percent: null, speed: null, eta: null, downloaded: null, total: null, file: null, error: null, log: [], createdAt: now });

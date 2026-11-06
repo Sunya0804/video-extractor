@@ -1,7 +1,7 @@
 // yt-dlp 오류 문구 테스트: node --test tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { errorLine, parseExtract, downloadArgs, SUB_LANGS_RE } from '../public/core/ytdlp.mjs';
+import { errorLine, parseExtract, downloadArgs, SUB_LANGS_RE, RATE_RE, downloadPrefs } from '../public/core/ytdlp.mjs';
 import { newAnalysis, runAnalysis } from '../public/core/pipeline.mjs';
 
 test('자막 받기: 영상에만 자막 인자를 붙이고, 병합할 때만 넣는다', () => {
@@ -17,6 +17,20 @@ test('자막 받기: 영상에만 자막 인자를 붙이고, 병합할 때만 �
     assert.ok(!a.some((x) => /sub/.test(x)), a.join(' '));
   }
   assert.equal(best.at(-1), '--');
+});
+
+test('파일 이름 규칙·채널 폴더·속도 제한 인자', () => {
+  const out = (fmt, title, outDir = 'C:\\d\\') => { const a = downloadArgs({ fmt: { format: 'best', ...fmt }, outDir, title, access: {} }); return a[a.indexOf('-o') + 1]; };
+  assert.equal(out({}), 'C:\\d\\%(title).150B [%(id)s].%(ext)s');
+  assert.equal(out({ nameStyle: 'channel' }), 'C:\\d\\%(channel,uploader|unknown).80B - %(title).150B [%(id)s].%(ext)s');
+  assert.equal(out({ nameStyle: 'date' }), 'C:\\d\\%(upload_date>%Y-%m-%d|unknown)s_%(title).150B [%(id)s].%(ext)s');
+  assert.equal(out({ channelDir: true }, 'a/b:c 100%', '/sdcard/Download'), '/sdcard/Download/%(channel,uploader|unknown).80B/a_b_c 100%% [%(id)s].%(ext)s');
+  const rate = downloadArgs({ fmt: { format: 'best', rateLimit: '5M' }, outDir: '/d', access: {} });
+  assert.deepEqual(rate.slice(rate.indexOf('--limit-rate'), rate.indexOf('--limit-rate') + 2), ['--limit-rate', '5M']);
+  assert.ok(!downloadArgs({ fmt: { format: 'best' }, outDir: '/d', access: {} }).includes('--limit-rate'));
+  for (const ok of ['500K', '5M', '1.5m', '100']) assert.ok(RATE_RE.test(ok), ok);
+  for (const bad of ['', '5 M', '-1M', '5MB', '1e9', '--exec']) assert.ok(!RATE_RE.test(bad), bad);
+  assert.deepEqual(downloadPrefs({ writeSubs: false, subLangs: 'ko', nameStyle: 'date', channelDir: true, rateLimit: '1M' }), { subLangs: '', nameStyle: 'date', channelDir: true, rateLimit: '1M' });
 });
 
 test('자막 언어 값 검사', () => {

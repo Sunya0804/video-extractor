@@ -1,0 +1,20 @@
+{
+  "initial": {
+    "rows": 50,
+    "count": "0개 선택 / 전체 65개",
+    "disabled": true
+  },
+  "afterMore": 65,
+  "allSelected": 64,
+  "selected": [
+    1,
+    3
+  ],
+  "quality": "720p",
+  "queued": [
+    "주말 여행 03 · 바다와 숲에서 보낸 하루",
+    "주말 여행 01 · 바다와 숲에서 보낸 하루"
+  ],
+  "jobCount": 6,
+  "mobileOverflow": false
+}

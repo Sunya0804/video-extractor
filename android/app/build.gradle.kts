@@ -26,7 +26,8 @@ android {
         targetSdk = 36
         versionCode = appVersionCode
         versionName = appVersion
-        ndk { abiFilters += "arm64-v8a" }
+        // 배포는 arm64만. PC 에뮬레이터 테스트용: gradlew assembleRelease -Pvx.abis=arm64-v8a,x86_64
+        ndk { abiFilters += ((project.findProperty("vx.abis") as String?) ?: "arm64-v8a").split(",") }
     }
 
     signingConfigs {

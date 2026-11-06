@@ -1,4 +1,5 @@
 import { extractUrls } from './core/urls.mjs';
+import { DOWNLOAD_CHOICES, PLAYLIST_PAGE_SIZE, canSelect, selectedItems, playlistRequests, enqueuePlaylist } from './playlist.mjs';
 const $ = selector => document.querySelector(selector);
 const mockMode = new URLSearchParams(location.search).get('mock') === '1';
 const state = { tools: [], toolsBusy: false, settings: {}, analyses: [], jobs: [], sites: [] };
@@ -45,7 +46,7 @@ async function run(key, action) {
   if (busy.has(key)) return;
   busy.add(key); renderBusy();
   try { await action(); } catch (error) { message(error.message, true); }
-  finally { busy.delete(key); renderBusy(); }
+  finally { busy.delete(key); renderBusy(); if (key.startsWith('playlist:')) renderAnalyses(); }
 }
 function button(text, key, action, disabled = false, className = '') {
   const b = el('button', text, className); b.type = 'button'; b.dataset.busyKey = key; b.dataset.locked = String(disabled); b.disabled = disabled || busy.has(key);
@@ -89,7 +90,7 @@ function renderItem(a, item) {
     message('다운로드 대기열에 추가했습니다.');
   };
   const actions = el('div', null, 'actions');
-  for (const [text, format, height] of [['최고 화질', 'best'], ['1080p', 'best', 1080], ['720p', 'best', 720], ['음성 MP3', 'audio']]) {
+  for (const { label: text, format, height } of DOWNLOAD_CHOICES) {
     const b = button(text, downloadKey, () => download(format, height), item.drm, text === '최고 화질' ? 'primary' : ''); b.dataset.focusKey = `${downloadKey}:${text}`; actions.append(b);
   }
   wrap.append(actions);
@@ -102,7 +103,52 @@ function renderItem(a, item) {
   }
   return wrap;
 }
+const playlistViews = new Map();
+function renderPlaylist(a) {
+  let view = playlistViews.get(a.id);
+  if (!view) { view = { selected: new Set(), visible: PLAYLIST_PAGE_SIZE, quality: 'best' }; playlistViews.set(a.id, view); }
+  const eligible = a.items.filter(canSelect);
+  view.selected = new Set(selectedItems(a.items, view.selected).map((item) => item.id));
+  const selected = view.selected.size;
+  const key = `playlist:${a.id}`;
+  const locked = busy.has(key);
+  const box = el('section', null, 'playlist'); box.dataset.playlistId = a.id;
+  box.append(el('h3', a.items.find((item) => item.playlist)?.playlist || '재생목록'));
+  const controls = el('div', null, 'playlist-controls');
+  controls.append(button('전체 선택', key, () => { view.selected = new Set(eligible.map((item) => item.id)); renderAnalyses(); }, locked || !eligible.length),
+    button('전체 해제', key, () => { view.selected.clear(); renderAnalyses(); }, locked || !selected));
+  const count = el('span', `${selected}개 선택 / 전체 ${a.items.length}개`, 'playlist-count'); count.setAttribute('role', 'status'); controls.append(count);
+  const qualityLabel = el('label', '화질 ', 'playlist-quality'); const quality = el('select');
+  quality.setAttribute('aria-label', '선택 항목 다운로드 화질'); quality.disabled = locked; quality.dataset.focusKey = `${key}:quality`;
+  for (const choice of DOWNLOAD_CHOICES) { const option = el('option', choice.label); option.value = choice.value; quality.append(option); }
+  quality.value = view.quality; quality.addEventListener('change', () => { view.quality = quality.value; }); qualityLabel.append(quality); controls.append(qualityLabel);
+  controls.append(button('선택 항목 받기', key, async () => {
+    const requests = playlistRequests(a, view.selected, view.quality);
+    renderAnalyses(); // 큐 등록 동안 선택과 중복 클릭을 잠근다.
+    const result = await enqueuePlaylist(request, requests, (id) => view.selected.delete(id));
+    const failures = result.failed.map(({ itemId, error }) => `${a.items.find((item) => item.id === itemId)?.title || itemId}: ${error}`);
+    message(`${result.queued.length}개를 다운로드 대기열에 추가했습니다.${failures.length ? `\n${failures.length}개 등록 실패 (선택 유지)\n${failures.slice(0, 5).join('\n')}` : ''}`, failures.length > 0);
+  }, locked || !selected, 'primary'));
+  box.append(controls, el('p', `전체 선택은 숨겨진 항목도 포함합니다. 받기 불가 ${a.items.length - eligible.length}개는 제외됩니다.`, 'hint'));
+  const list = el('div', null, 'playlist-list'); list.dataset.playlistScroll = a.id; list.tabIndex = 0; list.setAttribute('role', 'region'); list.setAttribute('aria-label', '재생목록 항목');
+  a.items.slice(0, view.visible).forEach((item, index) => {
+    const row = el('article', null, 'playlist-row'); row.dataset.itemId = item.id;
+    const label = el('label', null, 'playlist-check'); const check = el('input'); check.type = 'checkbox'; check.checked = view.selected.has(item.id); check.disabled = locked || !canSelect(item);
+    check.setAttribute('aria-label', `${index + 1}. ${item.title} 선택`); check.dataset.focusKey = `${key}:${item.id}`;
+    check.addEventListener('change', () => { if (check.checked) view.selected.add(item.id); else view.selected.delete(item.id); renderAnalyses(); });
+    const text = el('span'); text.append(el('strong', `${index + 1}. ${item.title}`), el('span', `${duration(item.duration)}${canSelect(item) ? '' : item.drm ? ' · DRM 보호' : ' · 영상 주소 없음'}`, 'meta')); label.append(check, text); row.append(label);
+    if (canSelect(item)) { const individual = details(`playlist-item:${a.id}:${item.id}`, '개별 받기 / 형식'); individual.append(renderItem(a, item)); row.append(individual); }
+    list.append(row);
+  });
+  box.append(list);
+  const shown = Math.min(view.visible, a.items.length);
+  const page = el('div', null, 'playlist-controls'); page.append(el('span', `${shown} / ${a.items.length}개 표시`, 'hint'));
+  if (shown < a.items.length) { const more = button(`더 보기 (+${Math.min(PLAYLIST_PAGE_SIZE, a.items.length - shown)}개)`, key, () => { view.visible += PLAYLIST_PAGE_SIZE; renderAnalyses(); }, locked); more.dataset.focusKey = `${key}:more`; page.append(more); }
+  box.append(page); return box;
+}
 function renderAnalyses() {
+  const scroll = new Map([...document.querySelectorAll('[data-playlist-scroll]')].map((node) => [node.dataset.playlistScroll, node.scrollTop]));
+  for (const id of playlistViews.keys()) if (!state.analyses.some((a) => a.id === id)) playlistViews.delete(id);
   $('#analysis-count').textContent = state.analyses.length;
   preserveDetails($('#analyses'), () => state.analyses.length ? [...state.analyses].sort((a,b) => b.createdAt - a.createdAt).map(a => {
     const card = el('article', null, 'card'); const top = el('div', null, 'analysis-top'); const status = chip(a.status, a.status === 'running' ? '분석 중' : a.status === 'done' ? `분석 완료 · ${a.items.length}개` : '분석 실패'); top.append(status); if (a.learnedStage) top.append(chip('success', `학습된 사이트 · ${a.learnedStage}단계부터`));
@@ -114,10 +160,12 @@ function renderAnalyses() {
     const stages = el('div', null, 'stages');
     for (let i = 1; i <= 3; i++) { const s = a.stages.find(s => s.stage === i) || { status: 'pending', message: '' }; const n = el('div', null, 'stage'); const head = el('div', null, 'stage-head'); head.append(el('span', `${i} ${stageNames[i-1]}`), chip(s.status)); n.append(head, el('p', s.message || '—')); stages.append(n); }
     card.append(stages); if (a.error) card.append(el('p', a.error, 'job-error'));
-    a.items.forEach(item => card.append(renderItem(a, item)));
+    if (a.items.length > 1 || a.items.some((item) => Object.hasOwn(item, 'playlist'))) card.append(renderPlaylist(a));
+    else a.items.forEach(item => card.append(renderItem(a, item)));
     if (a.status === 'done' && !a.items.length) card.append(el('p', '추출된 영상이 없습니다.', 'hint'));
     return card;
   }) : [empty('분석할 링크를 추가하세요', '추출 과정과 찾은 영상이 여기에 표시됩니다.')]);
+  document.querySelectorAll('[data-playlist-scroll]').forEach((node) => { node.scrollTop = scroll.get(node.dataset.playlistScroll) || 0; });
 }
 function renderJobs() {
   $('#job-count').textContent = state.jobs.length;
@@ -287,7 +335,9 @@ $('#reset-download-dir').addEventListener('click', () => run('settings', () => s
 $('#settings-form').addEventListener('submit', e => { e.preventDefault(); run('settings', async () => {
   const f = e.target.elements; const concurrentFragments = Number(f.concurrentFragments.value);
   if (!Number.isInteger(concurrentFragments) || concurrentFragments < 1 || concurrentFragments > 16) throw new Error('동시 조각 수는 1~16 정수로 입력하세요.');
-  const data = await saveFormSettings({ ...(!f.downloadDir.readOnly ? { downloadDir: f.downloadDir.value.trim() } : {}), browserVisible: f.browserVisible.checked, cookiesBrowser: f.cookiesBrowser.value, useLoginProfile: f.useLoginProfile.checked, concurrentFragments, writeSubs: f.writeSubs.checked, subLangs: f.subLangs.value.trim() });
+  const concurrentDownloads = Number(f.concurrentDownloads.value);
+  if (!Number.isInteger(concurrentDownloads) || concurrentDownloads < 1 || concurrentDownloads > 5) throw new Error('동시 다운로드 수는 1~5 정수로 입력하세요.');
+  const data = await saveFormSettings({ ...(!f.downloadDir.readOnly ? { downloadDir: f.downloadDir.value.trim() } : {}), browserVisible: f.browserVisible.checked, cookiesBrowser: f.cookiesBrowser.value, useLoginProfile: f.useLoginProfile.checked, concurrentFragments, writeSubs: f.writeSubs.checked, subLangs: f.subLangs.value.trim(), nameStyle: f.nameStyle.value, channelDir: f.channelDir.checked, rateLimit: f.rateLimit.value.trim(), concurrentDownloads });
   state.settings = data.settings; settingsDirty = false; renderSettings(); message('설정을 저장했습니다.');
 }); });
 

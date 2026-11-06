@@ -1,15 +1,15 @@
 // 안드로이드 앱용 transport: PC 서버(server.mjs)와 같은 API를 앱 안에서 처리한다.
 // 분석 로직은 public/core(PC와 공용), 실행 수단(yt-dlp·네트워크·WebView 캡처)은 네이티브 브리지(docs/android-bridge.md).
 import { scanPage, directTypeOf, classify } from './core/scan.mjs';
-import { extractArgs, parseExtract, downloadArgs, downloadLineHandler, errorLine, newId, SUB_LANGS_RE } from './core/ytdlp.mjs';
+import { extractArgs, parseExtract, downloadArgs, downloadLineHandler, errorLine, newId, SUB_LANGS_RE, RATE_RE, NAME_STYLES, downloadPrefs } from './core/ytdlp.mjs';
 import { checkDrm } from './core/drm.mjs';
 import { createSites } from './core/sites.mjs';
 import { newAnalysis, runAnalysis } from './core/pipeline.mjs';
 import { PLAY_SCRIPT } from './core/play.mjs';
 import { restoreDownloadResults, findDownloadCard } from './android-events.mjs';
+import { DEFAULT_CONCURRENT_DOWNLOADS, concurrentDownloadLimit, validConcurrentDownloads, pumpDownloadQueue } from './core/download-queue.mjs';
 
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
-const MAX_ACTIVE_JOBS = 2;
 const DAY = 24 * 60 * 60 * 1000;
 
 const load = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
@@ -43,10 +43,11 @@ export function createAndroid(receive, connection) {
   let info = null;
   const state = {
     tools: [], toolsBusy: false,
-    settings: { downloadDir: '', browserVisible: false, cookiesBrowser: '', useLoginProfile: true, concurrentFragments: 4, writeSubs: false, subLangs: 'ko,en', ...load('vx.settings', {}) },
+    settings: { downloadDir: '', browserVisible: false, cookiesBrowser: '', useLoginProfile: true, concurrentFragments: 4, concurrentDownloads: DEFAULT_CONCURRENT_DOWNLOADS, writeSubs: false, subLangs: 'ko,en', nameStyle: 'title', channelDir: false, rateLimit: '', ...load('vx.settings', {}) },
     analyses: [],
     jobs: load('vx.jobs', []),
   };
+  state.settings.concurrentDownloads = concurrentDownloadLimit(state.settings.concurrentDownloads);
   const sites = createSites(load('vx.sites', {}), (data) => save('vx.sites', data));
   const emit = (type, data) => receive(type, pub(data));
   const snapshot = () => pub({ ...state, sites: sites.list() });
@@ -122,17 +123,10 @@ export function createAndroid(receive, connection) {
     call('keepAlive', { active: n > 0, text: n ? `영상 ${n}개 받는 중` : '' }).catch(() => {});
   }
   function pumpJobs() {
-    let slots = MAX_ACTIVE_JOBS - activeCount();
-    for (const job of [...state.jobs].reverse()) {
-      if (slots <= 0) break;
-      if (job.status !== 'queued') continue;
-      slots--;
-      launchJob(job);
-    }
+    pumpDownloadQueue(state.jobs, state.settings.concurrentDownloads, launchJob);
     keepAlive();
   }
   async function launchJob(job) {
-    job.status = 'downloading';
     emit('job', job);
     let last = 0;
     const update = (patch) => {
@@ -179,7 +173,7 @@ export function createAndroid(receive, connection) {
       status: 'queued', percent: null, speed: null, eta: null, downloaded: null, total: null,
       file: null, error: null, log: [], createdAt: Date.now(),
       _url: item.url, _access: item._access || {}, _title: item.stage > 1 ? item.title : null,
-      _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, subLangs: state.settings.writeSubs ? state.settings.subLangs : '' },
+      _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, ...downloadPrefs(state.settings) },
     };
     state.jobs.unshift(job);
     emit('job', job);
@@ -259,15 +253,21 @@ export function createAndroid(receive, connection) {
       }
     }
     if (path === '/api/settings') {
+      if ('concurrentDownloads' in body && !validConcurrentDownloads(body.concurrentDownloads)) throw httpError(400, '동시 다운로드 수는 1~5 정수로 입력하세요.');
       const s = state.settings;
       if (typeof body.browserVisible === 'boolean') s.browserVisible = body.browserVisible;
       if (typeof body.useLoginProfile === 'boolean') s.useLoginProfile = body.useLoginProfile;
       if (Number.isInteger(body.concurrentFragments) && body.concurrentFragments >= 1 && body.concurrentFragments <= 16) s.concurrentFragments = body.concurrentFragments;
+      if ('concurrentDownloads' in body) s.concurrentDownloads = body.concurrentDownloads;
       if (typeof body.writeSubs === 'boolean') s.writeSubs = body.writeSubs;
       if (typeof body.subLangs === 'string' && body.subLangs.length <= 100 && SUB_LANGS_RE.test(body.subLangs)) s.subLangs = body.subLangs;
+      if (NAME_STYLES.includes(body.nameStyle)) s.nameStyle = body.nameStyle;
+      if (typeof body.channelDir === 'boolean') s.channelDir = body.channelDir;
+      if (body.rateLimit === '' || (typeof body.rateLimit === 'string' && RATE_RE.test(body.rateLimit))) s.rateLimit = body.rateLimit;
       s.downloadDir = info.downloadDir; // 앱에서는 공용 Download/VideoExtractor 고정
-      save('vx.settings', { browserVisible: s.browserVisible, useLoginProfile: s.useLoginProfile, concurrentFragments: s.concurrentFragments, writeSubs: s.writeSubs, subLangs: s.subLangs });
+      save('vx.settings', { browserVisible: s.browserVisible, useLoginProfile: s.useLoginProfile, concurrentFragments: s.concurrentFragments, concurrentDownloads: s.concurrentDownloads, writeSubs: s.writeSubs, subLangs: s.subLangs, nameStyle: s.nameStyle, channelDir: s.channelDir, rateLimit: s.rateLimit });
       emit('settings', s);
+      pumpJobs();
       return { settings: s };
     }
     if (path === '/api/login-browser') { await call('openLoginBrowser', { url: body.url || '' }); return { ok: true }; }
