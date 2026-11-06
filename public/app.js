@@ -184,7 +184,25 @@ $('#analyze-form').addEventListener('submit', event => {
   });
 });
 $('#urls').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#analyze-form').requestSubmit(); } });
-async function install(names) { $('#tool-details').open = true; await request('/api/tools/install', names ? { names } : {}); message('도구 설치/업데이트를 요청했습니다.'); }
+// 보조 패널(도구·학습된 사이트·설정)은 탭으로 하나씩 보여 준다. 고른 탭은 기억한다.
+function showTab(name) {
+  for (const tab of document.querySelectorAll('.side-tabs [role=tab]')) {
+    const on = tab.id === `tab-${name}`; tab.setAttribute('aria-selected', on); tab.tabIndex = on ? 0 : -1;
+    $(`#${tab.getAttribute('aria-controls')}`).hidden = !on;
+  }
+  try { localStorage.setItem('vx.tab', name); } catch {}
+}
+let savedTab = null; try { savedTab = localStorage.getItem('vx.tab'); } catch {}
+showTab(['tools', 'sites', 'settings'].includes(savedTab) ? savedTab : 'tools');
+$('.side-tabs').addEventListener('click', e => { const tab = e.target.closest('[role=tab]'); if (tab) showTab(tab.id.slice(4)); });
+$('.side-tabs').addEventListener('keydown', e => {
+  const tabs = [...document.querySelectorAll('.side-tabs [role=tab]')], i = tabs.indexOf(document.activeElement);
+  const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+  if (i < 0 || next === undefined) return;
+  e.preventDefault(); const tab = tabs[(next + tabs.length) % tabs.length]; tab.focus(); showTab(tab.id.slice(4));
+});
+
+async function install(names) { showTab('tools'); $('#tool-details').open = true; await request('/api/tools/install', names ? { names } : {}); message('도구 설치/업데이트를 요청했습니다.'); }
 $('#install-all').addEventListener('click', () => run('install', () => install()));
 $('#install-required').addEventListener('click', () => run('install', () => install(state.tools.filter(t => t.required && !t.installed).map(t => t.name))));
 $('#open-folder').addEventListener('click', () => run('folder', async () => { await request('/api/open-folder'); message('다운로드 폴더를 열었습니다.'); }));
