@@ -27,10 +27,13 @@ import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.lang.ref.WeakReference
 
 /**
  * VXNative 브리지(docs/android-bridge.md). 호출마다 백그라운드 스레드에서 돌고, 결과는 메인 스레드에서 JS로 돌려준다.
- * 스레드 풀은 제한이 없어 다운로드(최대 2개, JS가 조절)가 도는 중에도 ytdlp/fetch가 막히지 않는다.
+ * 다운로드는 별도 실행기에서 유지한다. JS가 동시 다운로드 수(1~5)를 조절한다.
  */
 class Bridge(private val activity: MainActivity) {
     private val pool = Executors.newCachedThreadPool()
@@ -57,17 +60,27 @@ class Bridge(private val activity: MainActivity) {
     fun appUpdate(data: JSONObject) = event("appUpdate", data)
     fun launch(json: String) = event("launch", JSONObject(json))
 
-    fun shutdown() = pool.shutdownNow()
+    fun shutdown() { pool.shutdown(); if (current.get() === this) current.clear() }
 
     private fun event(type: String, data: JSONObject) =
         send("window.__vxNative.event(${JSONObject.quote(type)}, ${JSONObject.quote(data.toString())})")
 
-    private fun send(script: String) = main.post { if (!activity.isDestroyed) activity.web.evaluateJavascript(script, null) }
+    private fun send(script: String) = main.post {
+        if (!activity.isDestroyed && activity.web.parent != null) activity.web.evaluateJavascript("if(window.__vxNative){$script}", null)
+    }
 
     private fun ok() = JSONObject().put("ok", true)
 
     private fun run(method: String, args: JSONObject): JSONObject = when (method) {
         "init" -> init()
+        "saveJobs" -> synchronized(JOB_STORE_LOCK) {
+            val prefs = ctx.getSharedPreferences("job-history", 0)
+            val revision = args.getLong("revision")
+            if (revision >= prefs.getLong("revision", 0)) {
+                check(prefs.edit().putString("jobs", args.getJSONArray("jobs").toString()).putLong("revision", revision).commit()) { "작업 기록을 저장하지 못했습니다" }
+            }
+            ok()
+        }
         "uiReady" -> { main.post { activity.onUiReady() }; ok() }
         "ackDownloadResults" -> {
             val ids = args.getJSONArray("ids")
@@ -88,7 +101,25 @@ class Bridge(private val activity: MainActivity) {
         }
         "ytdlp" -> ytdlp(args)
         "download" -> download(args)
-        "cancel" -> JSONObject().put("ok", YoutubeDL.getInstance().destroyProcessById(args.getString("jobId")))
+        "awaitDownload" -> awaitDownload(args.getString("jobId"))
+        "cleanupDownload" -> {
+            val id = args.getString("jobId")
+            require(id.matches(Regex("[\\w-]{1,100}")))
+            if (!active.containsKey(id)) File(ctx.cacheDir, "downloads/$id").deleteRecursively()
+            ok()
+        }
+        "cancel" -> {
+            val id = args.getString("jobId")
+            cancelled.add(id)
+            active[id]?.cancelled = true
+            JSONObject().put("ok", YoutubeDL.getInstance().destroyProcessById(id))
+        }
+        "statFiles" -> {
+            val paths = args.optJSONArray("paths") ?: JSONArray()
+            val missing = JSONArray()
+            for (i in 0 until paths.length()) if (!File(paths.getString(i)).isFile) missing.put(paths.getString(i))
+            JSONObject().put("missing", missing)
+        }
         "fetch" -> fetch(args)
         "capture" -> capture(args)
         "cookies" -> {
@@ -125,14 +156,30 @@ class Bridge(private val activity: MainActivity) {
     private fun downloadDir() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "VideoExtractor")
 
     private fun init(): JSONObject {
+        current = WeakReference(this)
         engineReady
         val plugins = File(ctx.filesDir, "plugins")
-        plugins.deleteRecursively()
-        copyAssets("plugins", plugins)
-        downloadDir().mkdirs() // 28 이하는 권한을 받은 뒤(첫 다운로드) 다시 만든다.
+        synchronized(PLUGIN_LOCK) {
+            val prefs = ctx.getSharedPreferences("plugins", 0)
+            val version = "${BuildConfig.VERSION_NAME}:${BuildConfig.VERSION_CODE}"
+            if (prefs.getString("version", null) != version || !plugins.isDirectory) {
+                plugins.deleteRecursively()
+                copyAssets("plugins", plugins)
+                prefs.edit().putString("version", version).commit()
+            }
+        }
+        downloadDir().mkdirs() // 29 이하는 첫 다운로드에서 권한을 받은 뒤 다시 만든다.
+        // 실행 목록을 먼저 읽는다. 그 뒤 완료한 항목도 pending 결과에 반드시 잡히게 한다.
+        val running = active.values.map { it.snapshot() }
+        val completed = DownloadResults.pending(ctx)
+        val ended = (0 until completed.length()).map { completed.getJSONObject(it).optString("id") }.toSet()
+        val history = ctx.getSharedPreferences("job-history", 0)
         return JSONObject()
             .put("appVersion", BuildConfig.VERSION_NAME)
-            .put("downloadResults", DownloadResults.pending(ctx))
+            .put("downloadResults", completed)
+            .put("activeDownloads", JSONArray(running.filter { it.optString("id") !in ended }))
+            .put("savedJobs", history.getString("jobs", null)?.let { runCatching { JSONArray(it) }.getOrNull() } ?: JSONObject.NULL)
+            .put("jobHistoryRevision", history.getLong("revision", 0))
             .put("appUpdate", activity.updater.snapshot())
             .put("ytdlpVersion", YoutubeDL.getInstance().version(ctx) ?: JSONObject.NULL)
             .put("pluginDir", plugins.absolutePath)
@@ -173,13 +220,50 @@ class Bridge(private val activity: MainActivity) {
 
     private fun download(args: JSONObject): JSONObject {
         val jobId = args.getString("jobId")
+        val task = NativeDownload(args.optJSONObject("job") ?: JSONObject().put("id", jobId).put("title", args.optString("title")))
+        task.cancelled = cancelled.remove(jobId)
+        val existing = active.putIfAbsent(jobId, task)
+        if (existing != null) return existing.result.get()
+        downloads.execute {
+            try { task.result.complete(executeDownload(args, task)) }
+            catch (error: Throwable) { task.result.completeExceptionally(error) }
+            finally { active.remove(jobId, task); cancelled.remove(jobId) }
+        }
+        return task.result.get()
+    }
+
+    private fun awaitDownload(jobId: String): JSONObject {
+        active[jobId]?.let { return it.result.get() }
+        val results = DownloadResults.pending(ctx)
+        for (i in 0 until results.length()) {
+            val item = results.getJSONObject(i)
+            if (item.optString("id") == jobId) return JSONObject().put("exitCode", when (item.optString("status")) { "done" -> 0; "cancelled" -> -2; else -> 1 })
+                .put("file", item.opt("file") ?: JSONObject.NULL).put("err", item.optString("error"))
+        }
+        throw IllegalStateException("진행 중인 다운로드를 찾지 못했습니다. 다시 받기를 누르세요.")
+    }
+
+    private fun executeDownload(args: JSONObject, task: NativeDownload): JSONObject {
+        val jobId = args.getString("jobId")
+        require(jobId.matches(Regex("[\\w-]{1,100}")))
+        val temporary = File(ctx.cacheDir, "downloads/$jobId")
         var file: String? = null
         val result = try {
             engineReady
             ensureStorage()
-            val response = YoutubeDL.getInstance().execute(request(args), jobId) { _, _, line ->
+            temporary.mkdirs()
+            check(!task.cancelled) { "cancelled" }
+            // 절대 -o 템플릿은 yt-dlp가 temp 경로를 무시하므로 home 기준 상대 템플릿으로 바꾼다.
+            val raw = args.getJSONArray("args")
+            val options = (0 until raw.length()).map { raw.getString(it) }.toMutableList()
+            val output = options.indexOf("-o")
+            if (output >= 0 && output + 1 < options.size) options[output + 1] = options[output + 1].removePrefix(downloadDir().absolutePath + "/")
+            val command = YoutubeDLRequest(args.getString("url")).addCommands(listOf("-P", "home:${downloadDir().absolutePath}", "-P", "temp:${temporary.absolutePath}") + options)
+            val response = YoutubeDL.getInstance().execute(command, jobId) { percent, _, line ->
+                if (task.cancelled) YoutubeDL.getInstance().destroyProcessById(jobId)
+                task.progress = percent.toDouble()
                 if (line.startsWith("VXFILE ")) file = line.removePrefix("VXFILE ").trim()
-                event("ytdlpLine", JSONObject().put("jobId", jobId).put("line", line))
+                current.get()?.event("ytdlpLine", JSONObject().put("jobId", jobId).put("line", line))
             }
             response.out.lineSequence().lastOrNull { it.startsWith("VXFILE ") }?.let { file = it.removePrefix("VXFILE ").trim() }
             JSONObject().put("exitCode", response.exitCode).put("err", response.err)
@@ -187,25 +271,24 @@ class Bridge(private val activity: MainActivity) {
             JSONObject().put("exitCode", -2).put("err", "cancelled")
         } catch (error: Exception) {
             JSONObject().put("exitCode", 1).put("err", error.message ?: error.toString())
-        }
+        } finally { temporary.deleteRecursively() }
+        if (task.cancelled) result.put("exitCode", -2).put("err", "cancelled")
         val code = result.getInt("exitCode")
-        if (code != -2) {
             // JS 복귀를 기다리지 않고 저장·알림. 알림 오류가 다운로드 결과를 바꾸지는 않는다.
             // 자막만 실패해도 yt-dlp는 1로 끝나므로, 최종 파일이 나왔으면 화면(android.js)과 같이 완료로 본다.
             val ok = code == 0 || file != null
-            val completed = JSONObject().put("id", jobId).put("title", args.optString("title", "Video Extractor"))
-                .put("format", args.optString("format", "영상")).put("createdAt", System.currentTimeMillis())
-                .put("status", if (ok) "done" else "failed").put("file", file ?: JSONObject.NULL)
+            val completed = task.snapshot().put("id", jobId).put("title", args.optString("title", "Video Extractor"))
+                .put("format", args.optString("format", "영상"))
+                .put("status", if (code == -2) "cancelled" else if (ok) "done" else "failed").put("file", file ?: JSONObject.NULL)
                 .put("error", if (ok) JSONObject.NULL else result.optString("err"))
             runCatching { DownloadResults.finish(ctx, completed) }
                 .onFailure { android.util.Log.w("VideoExtractor", "결과 알림 실패", it) }
-        }
         return result.put("file", file ?: JSONObject.NULL)
     }
 
-    /** API 28 이하는 공용 Download에 쓰려면 권한이 필요하다. 응답이 올 때까지(최대 2분) 이 스레드에서 기다린다. */
+    /** API 29 이하는 공용 Download에 쓰려면 권한이 필요하다. */
     private fun ensureStorage() {
-        if (Build.VERSION.SDK_INT <= 28 && activity.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT <= 29 && activity.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             val wait = CountDownLatch(1)
             activity.permissionWait = wait
             main.post { activity.requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), MainActivity.ASK_STORAGE) }
@@ -291,5 +374,21 @@ class Bridge(private val activity: MainActivity) {
         val done = result ?: throw IllegalStateException("capture timed out")
         if (done.has("error")) throw IllegalStateException(done.getString("error"))
         return done
+    }
+
+    private class NativeDownload(private val job: JSONObject) {
+        val result = CompletableFuture<JSONObject>()
+        @Volatile var cancelled = false
+        @Volatile var progress = 0.0
+        fun snapshot(): JSONObject = JSONObject(job.toString()).put("status", "downloading").put("percent", progress)
+    }
+
+    companion object {
+        private val PLUGIN_LOCK = Any()
+        private val JOB_STORE_LOCK = Any()
+        private val downloads = Executors.newCachedThreadPool()
+        private val active = ConcurrentHashMap<String, NativeDownload>()
+        private val cancelled = ConcurrentHashMap.newKeySet<String>()
+        @Volatile private var current = WeakReference<Bridge>(null)
     }
 }

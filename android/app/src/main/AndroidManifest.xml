@@ -2,14 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- 공용 Download/VideoExtractor에 저장. 28 이하만 필요 -->
+    <!-- Android 10의 legacy 공용 Download 쓰기도 런타임 권한이 필요하다. -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+        android:maxSdkVersion="29" />
     <!-- 다운로드 중 앱을 내려도 이어 받기(KeepAliveService) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -23,6 +21,7 @@
         android:theme="@style/AppTheme"
         android:allowBackup="false"
         android:extractNativeLibs="true"
+        android:usesCleartextTraffic="true"
         android:requestLegacyExternalStorage="true">
 
         <activity

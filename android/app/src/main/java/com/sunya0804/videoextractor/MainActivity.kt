@@ -12,6 +12,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.RenderProcessGoneDetail
 import android.window.OnBackInvokedDispatcher
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -35,6 +36,31 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         savedInstanceState?.getStringArrayList("launches")?.let { pendingLaunches.addAll(it) }
+        bridge = Bridge(this)
+        updater = Updater(this) { bridge.appUpdate(it) }
+        root = FrameLayout(this)
+        root.setBackgroundColor(getColor(R.color.background))
+        createWebView()
+
+        // targetSdk 36: 상태 표시줄과 키보드를 피한다.
+        if (Build.VERSION.SDK_INT >= 30) {
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val bars: Insets = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                WindowInsets.CONSUMED
+            }
+        }
+        setContentView(root)
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
+        }
+        if (intent?.action == Updater.ACTION_INSTALL_STATUS) updater.onInstallStatus(intent)
+        if (savedInstanceState == null) handleLaunch(intent)
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun createWebView() {
+        uiReady = false
         val assets = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
@@ -53,6 +79,15 @@ class MainActivity : Activity() {
                     uiReady = false
                 }
 
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    uiReady = false
+                    root.removeView(view)
+                    view.destroy()
+                    // Bridge의 다운로드 실행기는 유지한다. 새 JS는 init의 activeDownloads에 다시 연결한다.
+                    root.post { if (!isDestroyed) createWebView() }
+                    return true
+                }
+
                 // 앱 화면이 아닌 링크는 휴대폰 브라우저로 연다.
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     if (request.url.host == HOST) return false
@@ -64,28 +99,9 @@ class MainActivity : Activity() {
                 }
             }
         }
-        bridge = Bridge(this)
-        updater = Updater(this) { bridge.appUpdate(it) }
         web.addJavascriptInterface(bridge, "VXNative")
-
-        // targetSdk 36은 화면이 상태 표시줄 밑까지 그려지므로 그만큼 띄운다(바탕은 페이지와 같은 검정).
-        root = FrameLayout(this)
-        root.setBackgroundColor(getColor(R.color.background))
         root.addView(web)
-        if (Build.VERSION.SDK_INT >= 30) {
-            root.setOnApplyWindowInsetsListener { view, insets ->
-                val bars: Insets = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-                WindowInsets.CONSUMED
-            }
-        }
-        setContentView(root)
-        if (Build.VERSION.SDK_INT >= 33) {
-            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
-        }
         web.loadUrl("https://$HOST/assets/www/index.html")
-        if (intent?.action == Updater.ACTION_INSTALL_STATUS) updater.onInstallStatus(intent)
-        if (savedInstanceState == null) handleLaunch(intent)
     }
 
     override fun onResume() {
@@ -147,7 +163,7 @@ class MainActivity : Activity() {
     }
 
     private fun goBack() {
-        if (web.canGoBack()) web.goBack() else finish()
+        if (web.canGoBack()) web.goBack() else moveTaskToBack(true)
     }
 
     @Deprecated("API 32 이하에서만 불린다")

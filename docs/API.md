@@ -83,3 +83,10 @@ Analysis에는 학습된 단계부터 시작했을 때 `learnedStage: 2|3`이 �
 | `job` | `Job` (변경 시마다 전체 객체) |
 | `jobRemoved` | `{ id }` |
 | `settings` | `Settings` |
+
+## 1.0 PC 대기열·원격 계약
+- DELETE /api/analyses/:id: 진행 중 409, 삭제 시 analysisRemoved { id }. 분석은 동시에 3개, 대기 분석도 running. 완료 기록만 20개 제한 대상으로 정리합니다.
+- POST /api/jobs/:id/retry: failed/cancelled 또는 파일이 사라진 done이며 retryable일 때 새 id를 반환합니다. 예전 항목은 jobRemoved로 제거합니다. 중복 활성 URL/format/height는 409입니다.
+- retryable은 저장된 재시도 정보 유무입니다. 진행 작업도 저장하며 시작 시 queued로 복원합니다. 종료 시 취소 상태로 바꾸지 않습니다. cookiesFile은 저장하지 않습니다.
+- 원격 Pages 출처는 state/events, analyze/download, 작업 cancel/retry, 분석 삭제만 허용합니다. 나머지는 403. 원격 데이터에는 PC 경로를 숨기고 file은 이름만 전달합니다.
+- 도구 설치는 다운로드 종료 후에만 허용(409). 앱 업데이트만 요청한 경우는 허용합니다.

@@ -41,26 +41,33 @@ const state = {
   jobs: [],     // 최신이 앞
 };
 
-try { Object.assign(state.settings, JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'))); } catch {}
-state.settings.downloadDir = safeDownloadDir(state.settings.downloadDir) || DEFAULT_DOWNLOAD_DIR;
-state.settings.concurrentDownloads = concurrentDownloadLimit(state.settings.concurrentDownloads);
-state.jobs = await jobHistory.load();
-
 async function saveSettings(settings = state.settings) {
   await fsp.mkdir(DATA_DIR, { recursive: true });
-  await fsp.writeFile(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  const temp = SETTINGS_FILE + '.' + newId('s') + '.tmp';
+  try { await fsp.writeFile(temp, JSON.stringify(settings), { mode: 0o600 }); await fsp.rename(temp, SETTINGS_FILE); }
+  finally { await fsp.rm(temp, { force: true }); }
 }
 
 // 밑줄로 시작하는 내부 필드(_access, _ctrl 등)는 화면으로 보내지 않는다
 const pub = (obj) => JSON.parse(JSON.stringify(obj, (k, v) => (k.startsWith('_') ? undefined : v)));
-const snapshot = () => pub({ tools: state.tools, toolsBusy: state.toolsBusy, settings: state.settings, capabilities: { selectDownloadDir: !!appController?.selectDownloadDir, jobHistory: true }, analyses: state.analyses, jobs: state.jobs.map(jobFileStatus), sites: sites.list() });
+const snapshot = (remote = false) => publicData({ tools: state.tools, toolsBusy: state.toolsBusy, settings: state.settings, capabilities: { selectDownloadDir: !!appController?.selectDownloadDir, jobHistory: true }, analyses: state.analyses, jobs: state.jobs.map(jobFileStatus), sites: sites.list() }, remote);
 
+function publicData(data, remote = false) {
+ const clean = pub(data);
+ if (!remote) return clean;
+ const walk = (o) => { if (!o || typeof o !== 'object') return; for (const k of Object.keys(o)) {
+   if (['downloadDir','path','cookiesFile'].includes(k)) delete o[k];
+   else if (k === 'file' && typeof o[k] === 'string') o[k] = path.basename(o[k].replaceAll('\\','/'));
+   else if (['log','error','note'].includes(k)) o[k] = null;
+   else walk(o[k]);
+ } }; walk(clean); return clean;
+}
 // ---------- SSE ----------
 const clients = new Set();
 function emit(type, data) {
   if (type === 'job') data = jobFileStatus(data);
-  const payload = `event: ${type}\ndata: ${JSON.stringify(pub(data))}\n\n`;
-  for (const res of clients) res.write(payload);
+
+  for (const res of clients) res.write(`event: ${type}\ndata: ${JSON.stringify(publicData(data, res.remote))}\n\n`);
 }
 setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 25000).unref();
 
@@ -76,7 +83,10 @@ export function publishAppStatus() {
   emit('tools', { tools: state.tools, toolsBusy: state.toolsBusy });
 }
 export const hasActiveDownloads = () => state.jobs.some((j) => ['queued', 'downloading', 'merging'].includes(j.status));
+let stopping = false;
 export function cancelDownloads() {
+  stopping = true;
+  void jobHistory.save(state.jobs);
   for (const j of state.jobs) j._ctrl?.cancel();
 }
 export const flushJobHistory = () => jobHistory.flush();
@@ -101,6 +111,7 @@ async function runInstall(names) {
   finally {
     state.toolsBusy = false;
     await refreshTools();
+  pumpJobs();
   }
 }
 
@@ -116,8 +127,7 @@ function withBrowserLock(fn) {
 // 아니면 설정의 쿠키 브라우저를 쓴다
 async function baseAccess(url) {
   if (state.settings.useLoginProfile && url) {
-    const cookiesFile = await withBrowserLock(() => profileCookies(url));
-    if (cookiesFile) return { cookiesFile };
+    try { const cookiesFile = await withBrowserLock(() => profileCookies(url)); if (cookiesFile) return { cookiesFile }; } catch (error) { console.warn('[cookies]', error.message); }
   }
   return state.settings.cookiesBrowser ? { cookiesBrowser: state.settings.cookiesBrowser } : {};
 }
@@ -138,17 +148,30 @@ const pipelineDeps = {
   emit,
 };
 
+const analysisQueue = [];
+let analyzing = 0;
+function pruneAnalyses() {
+ while (state.analyses.length > 20) {
+  const index = state.analyses.findLastIndex(a => a.status !== 'running');
+  if (index < 0) break;
+  const [removed] = state.analyses.splice(index, 1); emit('analysisRemoved', { id: removed.id });
+ }
+}
+function pumpAnalyses() {
+ while (analyzing < 3 && analysisQueue.length) {
+  const [a, force] = analysisQueue.shift(); analyzing++;
+  Promise.resolve().then(() => runAnalysis(pipelineDeps, a, force)).catch(error => { a.status='failed'; a.error=error.message; emit('analysis',a); })
+   .finally(() => { analyzing--; pruneAnalyses(); pumpAnalyses(); });
+ }
+}
 function createAnalysis(url, forceStage) {
-  const a = newAnalysis(url);
-  state.analyses.unshift(a);
-  if (state.analyses.length > 20) state.analyses.length = 20;
-  emit('analysis', a);
-  runAnalysis(pipelineDeps, a, forceStage);
-  return a;
+ const a = newAnalysis(url); a.stages[0].message = '분석 대기 중'; state.analyses.unshift(a);
+ emit('analysis', a); analysisQueue.push([a,forceStage]); pruneAnalyses(); pumpAnalyses(); return a;
 }
 
 // ---------- 다운로드 ----------
 function finishJob(job) {
+  if (stopping) return;
   emit('job', job);
   void jobHistory.save(state.jobs);
   if (['done', 'failed'].includes(job.status)) {
@@ -159,25 +182,30 @@ function finishJob(job) {
 }
 
 function pumpJobs() {
+  if (stopping) return;
   pumpDownloadQueue(state.jobs, state.settings.concurrentDownloads, launchJob);
 }
 
 async function launchJob(job) {
   emit('job', job);
   try { await fsp.mkdir(state.settings.downloadDir, { recursive: true }); }
-  catch (e) { Object.assign(job, { status: 'failed', error: `다운로드 폴더를 만들지 못함: ${e.message}` }); return finishJob(job); }
-  job._ctrl = startDownload({
+  catch (e) { if (stopping || job._cancelled) return; Object.assign(job, { status: 'failed', error: `다운로드 폴더를 만들지 못함: ${e.message}` }); return finishJob(job); }
+  if (job._cancelled || stopping) return;
+  try { if (!job._access?.cookiesFile || !fs.existsSync(job._access.cookiesFile)) job._access = { ...job._access, ...await baseAccess(job._url) }; }
+  catch (error) { console.warn('[cookies]', error.message); }
+  if (job._cancelled || stopping) return;
+  try { job._ctrl = startDownload({
     url: job._url, access: job._access, fmt: job._fmt, title: job._title,
     outDir: state.settings.downloadDir, fragments: state.settings.concurrentFragments,    onLog: (line) => { job.log.push(line); if (job.log.length > 40) job.log.shift(); },
     onUpdate: (patch) => {
-      if (isFinishedJob(job)) return;
+      if (stopping || isFinishedJob(job)) return;
       Object.assign(job, patch);
       const now = Date.now();
       if (isFinishedJob(job)) return finishJob(job);
       // 진행 이벤트는 초당 4회로 제한
       if (!job._last || now - job._last > 250) { job._last = now; emit('job', job); }
     },
-  });
+  }); } catch(error) { if (!stopping && !job._cancelled) { job.status="failed";job.error=error.message;finishJob(job); } }
 }
 
 function createJob({ analysisId, itemId, format, height }) {
@@ -195,12 +223,19 @@ function createJob({ analysisId, itemId, format, height }) {
     _url: item.url, _access: item._access || {}, _title: item.stage > 1 ? item.title : null,
     _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, ...downloadPrefs(state.settings) },
   };
+  assertUniqueJob(job);
+  job.retryable = true;
   state.jobs.unshift(job);
+  void jobHistory.save(state.jobs);
   emit('job', job);
   pumpJobs();
   return job;
 }
 
+function assertUniqueJob(job) {
+ if (state.jobs.some(j => !isFinishedJob(j) && j._url === job._url && j._fmt?.format === job._fmt?.format && (j._fmt?.height || null) === (job._fmt?.height || null)))
+ throw Object.assign(new Error('이미 대기열에 있습니다'), { status: 409 });
+}
 // ---------- HTTP ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp' };
 
@@ -252,6 +287,12 @@ const SETTING_RULES = {
   rateLimit: (v) => v === '' || (typeof v === 'string' && RATE_RE.test(v)) ? v : undefined,
 };
 
+try {
+ const loaded = JSON.parse(fs.readFileSync(SETTINGS_FILE,'utf8'));
+ for(const [k,rule] of Object.entries(SETTING_RULES)) { const v=rule(loaded[k]); if(v!==undefined)state.settings[k]=v; }
+ state.settings.downloadDir=safeDownloadDir(state.settings.downloadDir)||DEFAULT_DOWNLOAD_DIR;
+} catch(error) { if(error.code!=='ENOENT')console.warn('[settings]',error.message); }
+state.jobs = await jobHistory.load();
 // 폴더를 만들고 실제 디렉터리인지 확인한 뒤에만 탐색기로 연다
 async function ensureDir(dir) {
   await fsp.mkdir(dir, { recursive: true });
@@ -263,16 +304,22 @@ async function ensureDir(dir) {
 async function handleApi(req, res, url, remote = false) {
   const p = url.pathname;
   const m = req.method;
-  if (m === 'GET' && p === '/api/state') return send(res, 200, snapshot());
+  if (remote && !((m === 'GET' && ['/api/state','/api/events'].includes(p)) || (m === 'POST' && (['/api/analyze','/api/download'].includes(p) || /^\/api\/jobs\/[\w-]+\/(cancel|retry)$/.test(p))) || (m === 'DELETE' && /^\/api\/analyses\/[\w-]+$/.test(p)))) return send(res,403,{error:'원격 화면에서 허용하지 않는 API입니다'});
+  if (m === 'GET' && p === '/api/state') return send(res, 200, snapshot(remote));
+  const am = p.match(/^\/api\/analyses\/([\w-]+)$/);
+  if (m === 'DELETE' && am) { const a=state.analyses.find(a=>a.id===am[1]); if(!a)return send(res,404,{error:'분석 없음'}); if(a.status==='running')return send(res,409,{error:'분석 진행 중입니다'});state.analyses=state.analyses.filter(x=>x!==a);emit('analysisRemoved',{id:a.id});return send(res,200,{ok:true}); }
+
   if (m === 'GET' && p === '/api/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-    res.write(`retry: 2000\nevent: state\ndata: ${JSON.stringify(snapshot())}\n\n`);
+    res.write(`retry: 2000\nevent: state\ndata: ${JSON.stringify(snapshot(remote))}\n\n`);
+    res.remote = remote;
     clients.add(res);
     req.on('close', () => clients.delete(res));
     return;
   }
   if (m === 'POST' && p === '/api/tools/install') {
     const body = await readJson(req);
+    if (hasActiveDownloads() && !(Array.isArray(body.names) && body.names.length === 1 && body.names[0] === 'app')) return send(res,409,{error:'다운로드가 끝난 뒤 업데이트하세요'});
     if (state.toolsBusy) return send(res, 409, { error: '이미 설치 중입니다' });
     runInstall(Array.isArray(body.names) ? body.names : null);
     return send(res, 200, { ok: true });
@@ -297,11 +344,20 @@ async function handleApi(req, res, url, remote = false) {
     await jobHistory.save(state.jobs);
     return send(res, 200, { ok: true, removed: removed.length });
   }
-  const jm = p.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|reveal))?$/);
+  const jm = p.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|reveal|retry))?$/);
   if (jm) {
     const job = state.jobs.find((j) => j.id === jm[1]);
     if (!job) return send(res, 404, { error: '작업을 찾지 못했습니다' });
+    if (m === 'POST' && jm[2] === 'retry') {
+      if (!isFinishedJob(job) || (job.status==='done' && !jobFileStatus(job).fileMissing)) return send(res,409,{error:'다시 받을 수 없는 상태입니다'});
+      if (!job.retryable) return send(res,409,{error:'예전 기록이라 다시 받을 수 없습니다. 다시 분석하세요.'});
+      const next={...job,id:newId('j'),status:'queued',percent:null,speed:null,eta:null,file:null,error:null,log:[],createdAt:Date.now(),_ctrl:undefined,_cancelled:false};
+      assertUniqueJob(next);state.jobs=state.jobs.filter(x=>x!==job);state.jobs.unshift(next);emit('jobRemoved',{id:job.id});emit('job',next);await jobHistory.save(state.jobs);pumpJobs();return send(res,200,{id:next.id});
+    }
     if (m === 'POST' && jm[2] === 'cancel') {
+      job._cancelled = true;
+      if (!isFinishedJob(job)) { job._ctrl?.cancel(); job.status='cancelled'; finishJob(job); }
+
       if (job.status === 'queued') { job.status = 'cancelled'; finishJob(job); }
       else job._ctrl?.cancel();
       return send(res, 200, { ok: true });
@@ -361,11 +417,11 @@ async function handleApi(req, res, url, remote = false) {
     }
     return send(res, 200, { ok: true });
   }
-  if (m === 'GET' && p === '/api/sites') return send(res, 200, { sites: sites.list() });
+  if (m === 'GET' && p === '/api/sites') return send(res, 200, { sites: sites.list() }, remote);
   const sm = p.match(/^\/api\/sites\/([^/]+)$/);
   if (m === 'DELETE' && sm) {
     if (!sites.forget(decodeURIComponent(sm[1]))) return send(res, 404, { error: '학습된 사이트가 아닙니다' });
-    emit('sites', { sites: sites.list() });
+    emit('sites', { sites: sites.list() }, remote);
     return send(res, 200, { ok: true });
   }
   if (m === 'POST' && p === '/api/shutdown') {
@@ -378,7 +434,6 @@ async function handleApi(req, res, url, remote = false) {
     return;
   }
   if (m === 'POST' && p === '/api/open-folder') {
-    await fsp.mkdir(state.settings.downloadDir, { recursive: true });
     openPath(await ensureDir(state.settings.downloadDir));
     return send(res, 200, { ok: true });
   }
@@ -422,7 +477,7 @@ async function cleanupTmp() {
 process.on('exit', () => {
   try { for (const f of fs.readdirSync(TMP_DIR)) if (f.startsWith('cookies-')) fs.rmSync(path.join(TMP_DIR, f), { force: true }); } catch {}
 });
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, async () => { await flushJobHistory(); process.exit(0); });
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, async () => { cancelDownloads(); await flushJobHistory(); process.exit(0); });
 
 // 백그라운드 작업(브라우저 제어 등)의 처리되지 않은 오류로 서버 전체가 꺼지지 않게 기록만 한다
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e?.message || e));
@@ -435,6 +490,7 @@ server.listen(PORT, '127.0.0.1', async () => {
   const addr = `http://127.0.0.1:${PORT}/`;
   console.log(`Video Extractor: ${addr}`);
   await refreshTools();
+  pumpJobs();
   const missing = state.tools.filter((t) => t.required && !t.installed).map((t) => t.name);
   if (missing.length) console.log(`필수 도구 없음: ${missing.join(', ')} — 화면의 도구 패널에서 설치하세요`);
   if (process.argv.includes('--open')) openPath(addr);

@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- 공용 저장소 전체(Download/VideoExtractor 포함) -->
-    <external-path name="external" path="." />
+    <external-path name="downloads" path="Download/VideoExtractor/" />
 </paths>
