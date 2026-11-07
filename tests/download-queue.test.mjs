@@ -66,10 +66,12 @@ test('Android 설정 저장은 실제 큐에 즉시 반영하고 줄여도 진�
   for (const concurrentDownloads of [0, 6, 1.5, '3']) {
     await assert.rejects(transport.request('/api/settings', { concurrentDownloads }), /1~5/);
   }
-  await transport.request('/api/analyze', { url: 'https://example.com/video' });
-  await settle();
-  const analysis = (await state()).analyses[0];
-  for (let i = 0; i < 6; i++) await transport.request('/api/download', { analysisId: analysis.id, itemId: analysis.items[0].id, format: 'best' });
+  for (let i = 0; i < 6; i++) {
+    await transport.request('/api/analyze', { url: `https://example.com/video-${i}` });
+    await settle();
+    const analysis = (await state()).analyses[0];
+    await transport.request('/api/download', { analysisId: analysis.id, itemId: analysis.items[0].id, format: 'best' });
+  }
   await settle();
   assert.equal(downloads.length, 2);
   await transport.request('/api/settings', { concurrentDownloads: 4 });

@@ -107,5 +107,5 @@ test('설정 API는 실제 경로를 저장하고 오류 때 설정을 보존하
   chosen = null;
   assert.deepEqual(await post('/api/settings/select-download-dir'), { status: 200, body: { downloadDir: null } });
   assert.deepEqual((await state()).settings, before); // 취소와 선택 자체는 설정을 바꾸지 않는다.
-  assert.equal((await post('/api/settings', { useLoginProfile: false }, remote)).status, 200);
+  assert.equal((await post('/api/settings', { useLoginProfile: false }, remote)).status, 403);
 });

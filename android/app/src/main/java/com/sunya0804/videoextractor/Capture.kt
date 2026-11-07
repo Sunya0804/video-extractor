@@ -13,6 +13,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.RenderProcessGoneDetail
 import android.widget.FrameLayout
 import org.json.JSONArray
 import org.json.JSONObject
@@ -48,6 +49,17 @@ class Capture(private val activity: MainActivity, args: JSONObject, private val 
         web.settings.mediaPlaybackRequiresUserGesture = false
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.webViewClient = object : WebViewClient() {
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (!finished) {
+                    finished = true
+                    handler.removeCallbacksAndMessages(null)
+                    dialog?.dismiss()
+                    (view.parent as? ViewGroup)?.removeView(view)
+                    view.destroy()
+                    done(JSONObject().put("error", "브라우저 엔진이 종료되었습니다. 다시 분석하세요."))
+                }
+                return true
+            }
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 saw(request.url.toString(), request.requestHeaders.entries.firstOrNull { it.key.equals("referer", true) }?.value)
                 return null

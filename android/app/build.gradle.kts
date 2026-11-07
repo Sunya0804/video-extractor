@@ -26,6 +26,7 @@ android {
         targetSdk = 36
         versionCode = appVersionCode
         versionName = appVersion
+        testInstrumentationRunner = "com.sunya0804.videoextractor.SmokeInstrumentation"
         // 배포는 arm64만. PC 에뮬레이터 테스트용: gradlew assembleRelease -Pvx.abis=arm64-v8a,x86_64
         ndk { abiFilters += ((project.findProperty("vx.abis") as String?) ?: "arm64-v8a").split(",") }
     }
@@ -51,6 +52,7 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    testBuildType = "release"
 
     // youtubedl-android는 python/ffmpeg/qjs를 .so 파일로 싣고 설치 때 풀린 파일을 실행한다.
     packaging {
@@ -75,8 +77,12 @@ val copyWebAssets = tasks.register<Sync>("copyWebAssets") {
 tasks.named("preBuild") { dependsOn(copyWebAssets) }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.core:core:1.13.0")
 }
+
+// 공유 링크·설치 콜백 회귀 검사도 릴리스 빌드에서 실행한다.
+tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn("testReleaseUnitTest") }

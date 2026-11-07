@@ -29,7 +29,7 @@ object DownloadResults {
     @Synchronized fun finish(context: Context, job: JSONObject) {
         val id = job.getString("id")
         val status = job.getString("status")
-        if (status !in listOf("done", "failed")) return // 취소는 결과 알림을 띄우지 않는다.
+        if (status !in listOf("done", "failed", "cancelled")) return
         val old = pending(context)
         val saved = JSONArray().put(job)
         for (i in 0 until old.length()) {
@@ -38,6 +38,7 @@ object DownloadResults {
         }
         // 알림을 누르는 시점에는 항상 복원할 결과가 먼저 저장되어 있어야 한다.
         prefs(context).edit().putString("pending", saved.toString()).commit()
+        if (status == "cancelled") return // 결과 복원은 하되 취소 알림은 띄우지 않는다.
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val manager = context.getSystemService(NotificationManager::class.java)
         KeepAliveService.ensureChannel(context)

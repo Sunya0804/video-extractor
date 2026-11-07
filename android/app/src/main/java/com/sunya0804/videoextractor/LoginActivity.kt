@@ -12,6 +12,7 @@ import android.view.WindowInsets
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.RenderProcessGoneDetail
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -46,6 +47,12 @@ class LoginActivity : Activity() {
             // 같은 엔진의 일반 Chrome 모바일 UA로 보여 준다(Version/4.0, wv 표시만 제거)
             settings.userAgentString = settings.userAgentString.replace("; wv", "").replace(Regex("Version/\\d+\\.\\d+ "), "")
             webViewClient = object : WebViewClient() {
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    (view.parent as? android.view.ViewGroup)?.removeView(view)
+                    view.destroy()
+                    finish()
+                    return true
+                }
                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                     address.text = url
                 }

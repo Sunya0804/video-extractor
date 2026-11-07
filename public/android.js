@@ -6,7 +6,7 @@ import { checkDrm } from './core/drm.mjs';
 import { createSites } from './core/sites.mjs';
 import { newAnalysis, runAnalysis } from './core/pipeline.mjs';
 import { PLAY_SCRIPT } from './core/play.mjs';
-import { restoreDownloadResults, findDownloadCard } from './android-events.mjs';
+import { restoreDownloadResults, findDownloadCard, activeJob, retryableJob, cleanAccess, storedJobs, restoredJobs } from './android-events.mjs';
 import { DEFAULT_CONCURRENT_DOWNLOADS, concurrentDownloadLimit, validConcurrentDownloads, pumpDownloadQueue } from './core/download-queue.mjs';
 
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
@@ -23,6 +23,7 @@ export function createAndroid(receive, connection) {
   const pending = new Map();
   const lineListeners = new Map();
   let callSeq = 0;
+  const callPrefix = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   window.__vxNative = {
     resolve(id, json) { const p = pending.get(id); if (!p) return; pending.delete(id); try { p.resolve(JSON.parse(json)); } catch (e) { p.reject(e); } },
     reject(id, message) { const p = pending.get(id); if (!p) return; pending.delete(id); p.reject(new Error(message)); },
@@ -34,7 +35,7 @@ export function createAndroid(receive, connection) {
     },
   };
   const call = (method, args = {}) => new Promise((resolve, reject) => {
-    const id = `c${++callSeq}`;
+    const id = `${callPrefix}c${++callSeq}`;
     pending.set(id, { resolve, reject });
     try { window.VXNative.call(id, method, JSON.stringify(args)); } catch (e) { pending.delete(id); reject(e); }
   });
@@ -45,13 +46,20 @@ export function createAndroid(receive, connection) {
     tools: [], toolsBusy: false,
     settings: { downloadDir: '', browserVisible: false, cookiesBrowser: '', useLoginProfile: true, concurrentFragments: 4, concurrentDownloads: DEFAULT_CONCURRENT_DOWNLOADS, writeSubs: false, subLangs: 'ko,en', nameStyle: 'title', channelDir: false, rateLimit: '', ...load('vx.settings', {}) },
     analyses: [],
-    jobs: load('vx.jobs', []),
+    jobs: Array.isArray(load('vx.jobs', [])) ? load('vx.jobs', []) : [],
   };
   state.settings.concurrentDownloads = concurrentDownloadLimit(state.settings.concurrentDownloads);
   const sites = createSites(load('vx.sites', {}), (data) => save('vx.sites', data));
-  const emit = (type, data) => receive(type, pub(data));
-  const snapshot = () => pub({ ...state, sites: sites.list() });
-  const saveJobs = () => save('vx.jobs', state.jobs.filter((j) => ['done', 'failed', 'cancelled'].includes(j.status)).slice(0, 30));
+  const publicJob = (job) => ({ ...job, retryable: retryableJob(job) });
+  const emit = (type, data) => receive(type, pub(type === 'job' ? publicJob(data) : data));
+  const snapshot = () => pub({ ...state, jobs: state.jobs.map(publicJob), capabilities: { jobHistory: true }, sites: sites.list() });
+  let historyRevision = Date.now();
+  const saveJobs = () => {
+    const jobs = storedJobs(state.jobs);
+    save('vx.jobs', jobs);
+    historyRevision = Math.max(historyRevision + 1, Date.now());
+    return call('saveJobs', { jobs, revision: historyRevision }).catch((e) => toolLog(`기록 저장 실패: ${e.message}`));
+  };
   const toolLog = (line) => emit('toolLog', { line });
   const pluginArgs = () => (info?.pluginDir ? ['--plugin-dirs', info.pluginDir] : []);
 
@@ -72,7 +80,8 @@ export function createAndroid(receive, connection) {
 
   // 로그인 브라우저에서 받은 쿠키를 yt-dlp에도 쓴다
   async function withLoginCookies(url, access) {
-    if (!state.settings.useLoginProfile || access.cookiesFile) return access;
+    access = cleanAccess(access);
+    if (!state.settings.useLoginProfile) return access;
     try { const { cookiesFile } = await call('cookies', { urls: [url] }); return cookiesFile ? { ...access, cookiesFile } : access; } catch { return access; }
   }
 
@@ -107,12 +116,31 @@ export function createAndroid(receive, connection) {
     emit,
   };
 
+  const analysisQueue = [];
+  let analysesRunning = 0;
+  function trimAnalyses() {
+    for (let i = state.analyses.length - 1; i >= 0 && state.analyses.length > 20; i--) {
+      const a = state.analyses[i];
+      if (a.status === 'running') continue;
+      state.analyses.splice(i, 1);
+      emit('analysisRemoved', { id: a.id });
+    }
+  }
+  function pumpAnalyses() {
+    while (analysesRunning < 3 && analysisQueue.length) {
+      const { a, forceStage } = analysisQueue.shift();
+      analysesRunning++;
+      runAnalysis(deps, a, forceStage).finally(() => { analysesRunning--; trimAnalyses(); pumpAnalyses(); });
+    }
+  }
   function createAnalysis(url, forceStage) {
     const a = newAnalysis(url);
     state.analyses.unshift(a);
-    if (state.analyses.length > 20) state.analyses.length = 20;
+    a.stages[0].message = '대기 중';
+    trimAnalyses();
     emit('analysis', a);
-    runAnalysis(deps, a, forceStage);
+    analysisQueue.push({ a, forceStage });
+    pumpAnalyses();
     return a;
   }
 
@@ -120,28 +148,37 @@ export function createAndroid(receive, connection) {
   function activeCount() { return state.jobs.filter((j) => j.status === 'downloading' || j.status === 'merging').length; }
   function keepAlive() {
     const n = activeCount() + state.jobs.filter((j) => j.status === 'queued').length;
-    call('keepAlive', { active: n > 0, text: n ? `영상 ${n}개 받는 중` : '' }).catch(() => {});
+    const running = state.jobs.filter((j) => ['downloading', 'merging'].includes(j.status));
+    const percent = running.length ? Math.round(running.reduce((sum, j) => sum + (Number(j.percent) || 0), 0) / running.length) : null;
+    call('keepAlive', { active: n > 0, text: n ? `영상 ${n}개 받는 중${percent == null ? '' : ` · ${percent}%`}` : '' }).catch(() => {});
   }
   function pumpJobs() {
     pumpDownloadQueue(state.jobs, state.settings.concurrentDownloads, launchJob);
     keepAlive();
   }
-  async function launchJob(job) {
+  async function launchJob(job, attach = false) {
+    await saveJobs();
     emit('job', job);
     let last = 0;
     const update = (patch) => {
       if (['done', 'failed', 'cancelled'].includes(job.status)) return;
       Object.assign(job, patch);
       const now = Date.now();
-      if (now - last > 250) { last = now; emit('job', job); }
+      if (now - last > 250) { last = now; emit('job', job); keepAlive(); }
     };
     const lines = downloadLineHandler({ onUpdate: update, onLog: (l) => { job.log.push(l); if (job.log.length > 40) job.log.shift(); } });
     lineListeners.set(job.id, (l) => lines.handle(l));
     let nativeHandled = false;
     try {
-      const access = await withLoginCookies(job._url, job._access || {});
-      const args = downloadArgs({ fmt: job._fmt, outDir: info.downloadDir, title: job._title, fragments: state.settings.concurrentFragments, access, pluginArgs: pluginArgs() });
-      const r = await call('download', { jobId: job.id, url: job._url, args, title: job.title, format: job.format });
+      let r;
+      if (attach) r = await call('awaitDownload', { jobId: job.id });
+      else {
+        const access = await withLoginCookies(job._url, job._access || {});
+        if (job._cancelled) throw new Error('cancelled');
+        const args = downloadArgs({ fmt: job._fmt, outDir: info.downloadDir, title: job._title, fragments: state.settings.concurrentFragments, access, pluginArgs: pluginArgs() });
+        job._nativeStarted = true;
+        r = await call('download', { jobId: job.id, url: job._url, args, title: job.title, format: job.format, job: storedJobs([job])[0] });
+      }
       nativeHandled = true;
       const file = r.file || lines.file();
       if (r.exitCode === -2 || job._cancelled) Object.assign(job, { status: 'cancelled' });
@@ -153,8 +190,9 @@ export function createAndroid(receive, connection) {
       Object.assign(job, { status: job._cancelled ? 'cancelled' : 'failed', error: job._cancelled ? null : e.message });
     }
     lineListeners.delete(job.id);
+    if (job.status === 'done') await refreshFiles([job]);
     emit('job', job);
-    saveJobs();
+    await saveJobs();
     // 네이티브 실행 전 실패도 알림. 먼저 저장해 알림을 누를 때 항목을 찾을 수 있게 한다.
     if (!nativeHandled && job.status === 'failed') await call('notifyDownload', pub(job)).catch(() => {});
     await call('ackDownloadResults', { ids: [job.id] }).catch(() => {});
@@ -175,10 +213,25 @@ export function createAndroid(receive, connection) {
       _url: item.url, _access: item._access || {}, _title: item.stage > 1 ? item.title : null,
       _fmt: { format: String(format), height: Number(height) || null, kind: fmt?.kind, ...downloadPrefs(state.settings) },
     };
+    return enqueueJob(job);
+  }
+
+  function enqueueJob(job) {
+    if (state.jobs.some((old) => activeJob(old) && old._url === job._url && old._fmt?.format === job._fmt.format && old._fmt?.height === job._fmt.height)) throw httpError(409, '이미 대기열에 있습니다');
     state.jobs.unshift(job);
+    saveJobs();
     emit('job', job);
     pumpJobs();
     return job;
+  }
+
+  async function refreshFiles(jobs = state.jobs) {
+    const done = jobs.filter((job) => job.status === 'done');
+    if (!done.length) return;
+    const paths = done.map((job) => job.file).filter(Boolean);
+    const result = await call('statFiles', { paths }).catch(() => null);
+    if (!result) return;
+    for (const job of done) job.fileMissing = !job.file || (result.missing || []).includes(job.file);
   }
 
   // ---------- 도구(yt-dlp 업데이트, 앱 업데이트) ----------
@@ -224,7 +277,7 @@ export function createAndroid(receive, connection) {
   async function request(path, body = {}, method = 'POST') {
     if (!info) throw new Error('앱 엔진을 준비하는 중입니다. 잠시 후 다시 시도하세요.');
     body = body || {};
-    if (method === 'GET' && path === '/api/state') return snapshot();
+    if (method === 'GET' && path === '/api/state') { await refreshFiles(); return snapshot(); }
     if (path === '/api/tools/install') { runInstall(Array.isArray(body.names) ? body.names : null); return { ok: true }; }
     if (path === '/api/analyze') {
       let target;
@@ -232,22 +285,59 @@ export function createAndroid(receive, connection) {
       if (!target || !/^https?:$/.test(target.protocol)) throw httpError(400, 'http(s) 주소를 입력하세요');
       return { id: createAnalysis(target.href, [1, 2, 3].includes(body.forceStage) ? body.forceStage : null).id };
     }
-    if (path === '/api/download') return { id: createJob(body).id };
-    const jm = path.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|reveal))?$/);
+    if (path === '/api/download') { const job = createJob(body); await saveJobs(); return { id: job.id }; }
+    const am = path.match(/^\/api\/analyses\/([\w-]+)$/);
+    if (method === 'DELETE' && am) {
+      const analysis = state.analyses.find((a) => a.id === am[1]);
+      if (!analysis) throw httpError(404, '분석 결과를 찾지 못했습니다');
+      if (analysis.status === 'running') throw httpError(409, '진행 중인 분석은 지울 수 없습니다');
+      state.analyses = state.analyses.filter((a) => a !== analysis);
+      emit('analysisRemoved', { id: analysis.id });
+      return { ok: true };
+    }
+    if (method === 'DELETE' && path === '/api/jobs/completed') {
+      const removed = state.jobs.filter((job) => !activeJob(job));
+      state.jobs = state.jobs.filter(activeJob);
+      await saveJobs();
+      for (const job of removed) emit('jobRemoved', { id: job.id });
+      return { ok: true, removed: removed.length };
+    }
+    const jm = path.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|reveal|retry))?$/);
     if (jm) {
       const job = state.jobs.find((j) => j.id === jm[1]);
       if (!job) throw httpError(404, '작업을 찾지 못했습니다');
-      if (jm[2] === 'cancel') {
+      if (method === 'POST' && jm[2] === 'retry') {
+        if (activeJob(job)) throw httpError(409, '진행 중인 작업은 다시 받을 수 없습니다');
+        if (!retryableJob(job)) throw httpError(409, '예전 기록이라 다시 받을 수 없습니다. 다시 분석하세요.');
+        await refreshFiles([job]);
+        if (!['failed', 'cancelled'].includes(job.status) && !(job.status === 'done' && job.fileMissing)) throw httpError(409, '완료된 파일이 있습니다');
+        const next = enqueueJob({ ...storedJobs([job])[0], id: newId('j'), status: 'queued', createdAt: Date.now(),
+          percent: null, speed: null, eta: null, downloaded: null, total: null, file: null, fileMissing: false, error: null, log: [] });
+        state.jobs = state.jobs.filter((old) => old !== job);
+        emit('jobRemoved', { id: job.id });
+        await saveJobs();
+        return { id: next.id };
+      }
+      if (method === 'POST' && jm[2] === 'cancel') {
+        if (!activeJob(job)) return { ok: true };
         job._cancelled = true;
-        if (job.status === 'queued') { job.status = 'cancelled'; emit('job', job); keepAlive(); }
-        else await call('cancel', { jobId: job.id });
+        if (job.status === 'queued') {
+          job.status = 'cancelled'; emit('job', job); await saveJobs();
+          call('cleanupDownload', { jobId: job.id }).catch(() => {});
+          pumpJobs();
+        }
+        else if (job._nativeStarted || (info.activeDownloads || []).some((active) => active.id === job.id)) await call('cancel', { jobId: job.id });
         return { ok: true };
       }
-      if (jm[2] === 'reveal') { await call(job.file ? 'openFile' : 'openFolder', job.file ? { path: job.file } : {}); return { ok: true }; }
-      if (method === 'DELETE') {
+      if (method === 'POST' && jm[2] === 'reveal') {
+        await refreshFiles([job]);
+        if (job.fileMissing) { emit('job', job); throw httpError(404, '파일 없음: 완료된 파일이 이동되거나 삭제되었습니다.'); }
+        await call(job.file ? 'openFile' : 'openFolder', job.file ? { path: job.file } : {}); return { ok: true };
+      }
+      if (method === 'DELETE' && !jm[2]) {
         if (['queued', 'downloading', 'merging'].includes(job.status)) throw httpError(409, '진행 중인 작업은 먼저 취소하세요');
         state.jobs = state.jobs.filter((j) => j !== job);
-        saveJobs();
+        await saveJobs();
         emit('jobRemoved', { id: job.id });
         return { ok: true };
       }
@@ -287,17 +377,20 @@ export function createAndroid(receive, connection) {
   (async () => {
     try {
       info = await call('init');
+      historyRevision = Math.max(historyRevision, Number(info.jobHistoryRevision) || 0);
       appUpdate = info.appUpdate || appUpdate;
       state.settings.downloadDir = info.downloadDir;
-      state.jobs = restoreDownloadResults(state.jobs, info.downloadResults);
-      // 앱을 다시 켜면 진행 중이던 작업은 끊겨 있다
-      for (const j of state.jobs) if (!['done', 'failed', 'cancelled'].includes(j.status)) Object.assign(j, { status: 'failed', error: '앱이 종료되어 중단됨' });
+      state.jobs = restoreDownloadResults(Array.isArray(info.savedJobs) ? info.savedJobs : state.jobs, info.downloadResults);
+      state.jobs = restoredJobs(state.jobs, info.activeDownloads || []);
+      await refreshFiles();
       buildTools();
       connection('앱 엔진 준비됨', 'success');
       emit('state', snapshot());
-      saveJobs();
+      await saveJobs();
       await call('ackDownloadResults', { ids: (info.downloadResults || []).map((job) => job.id) }).catch(() => {});
       await call('uiReady');
+      for (const job of state.jobs) if ((info.activeDownloads || []).some((active) => active.id === job.id)) launchJob(job, true);
+      pumpJobs();
       // 배포된 yt-dlp가 오래되면 YouTube가 실패하므로 하루 1회 자동 업데이트
       if (Date.now() - (load('vx.ytdlpCheckedAt', 0) || 0) > DAY) runInstall(['yt-dlp']);
       checkAppUpdate();

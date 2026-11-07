@@ -5,6 +5,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
@@ -26,6 +28,8 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
     private var ready: File? = null
     private var waitingForPermission = false
     private var installing = false
+    @Volatile private var downloadRequested = false
+    private val installPrefs = activity.getSharedPreferences("update-install", android.content.Context.MODE_PRIVATE)
 
     fun snapshot() = JSONObject().put("status", status).put("progress", progress)
         .put("latest", latest).put("current", BuildConfig.VERSION_NAME)
@@ -46,7 +50,8 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
         if (System.currentTimeMillis() - lastCheck >= SIX_HOURS) check()
     }
 
-    @Synchronized fun check(): JSONObject {
+    @Synchronized fun check(userRequested: Boolean = false): JSONObject {
+        if (userRequested) downloadRequested = true
         // 브리지와 onResume이 동시에 호출해도 확인을 중복 예약하지 않는다.
         if (status == "업데이트 확인 중" || status.startsWith("새 버전 받는 중")) return snapshot()
         lastCheck = System.currentTimeMillis()
@@ -75,16 +80,27 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
         } finally { conn.disconnect() }
         val version = release.getString("tag_name").removePrefix("v")
         require(Regex("\\d+\\.\\d+\\.\\d+").matches(version)) { "지원하지 않는 버전 형식" }
-        if (!newer(version, BuildConfig.VERSION_NAME)) { latest = ""; ready = null; state("최신 버전입니다"); return }
+        if (!newer(version, BuildConfig.VERSION_NAME)) { latest = ""; ready = null; cleanDownloads(null); state("최신 버전입니다"); return }
         val assets = release.getJSONArray("assets")
         val asset = (0 until assets.length()).map { assets.getJSONObject(it) }.firstOrNull { it.getString("name").endsWith(".apk") }
             ?: throw IllegalStateException("안드로이드 APK가 아직 없습니다")
         latest = version
         folder.mkdirs()
         val file = File(folder, "VideoExtractor-$version.apk")
+        cleanDownloads(file)
         val size = asset.getLong("size")
         require(size > 0) { "빈 APK" }
         if (!file.exists() || file.length() != size) {
+            if (!downloadRequested && !unmeteredNetwork()) {
+                state("새 버전 있음 · 다운로드 대기")
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) AlertDialog.Builder(activity)
+                        .setTitle("Video Extractor 업데이트")
+                        .setMessage("새 버전 $version 을 받을까요? 약 ${size / 1024 / 1024}MB를 사용합니다. Wi-Fi 등 무제한 네트워크에서는 자동으로 받을 수 있습니다.")
+                        .setPositiveButton("다운로드") { _, _ -> install() }.setNegativeButton("나중에", null).show()
+                }
+                return
+            }
             val part = File(folder, "${file.name}.part")
             val download = connection(asset.getString("browser_download_url"))
             try {
@@ -95,6 +111,7 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
                     val buffer = ByteArray(65536)
                     while (true) {
                         if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                        check(downloadRequested || unmeteredNetwork()) { "무제한 네트워크가 끊겨 다운로드를 멈췄습니다. 도구 패널에서 다시 받으세요." }
                         val n = input.read(buffer)
                         if (n < 0) break
                         got += n
@@ -110,6 +127,7 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
         }
         // 패키지·서명은 최종적으로 PackageInstaller가 검증한다.
         ready = file
+        downloadRequested = false
         state("설치 준비됨", 100)
         val notes = releaseNotes(version).let { if (it.isEmpty()) "" else "\n\n$it" }
         activity.runOnUiThread {
@@ -118,6 +136,16 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
                 .setMessage("새 버전 $version 을 받았습니다.$notes\n\n설치하면 앱이 닫힙니다. 지금 설치할까요?")
                 .setPositiveButton("설치") { _, _ -> install() }.setNegativeButton("나중에", null).show()
         }
+    }
+
+    private fun unmeteredNetwork(): Boolean {
+        val manager = activity.getSystemService(ConnectivityManager::class.java)
+        val capabilities = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) && !manager.isActiveNetworkMetered
+    }
+
+    private fun cleanDownloads(keep: File?) {
+        folder.listFiles()?.filter { it != keep }?.forEach { it.deleteRecursively() }
     }
 
     /** 지금 버전보다 새롭고 받은 버전까지인 릴리스의 변경 내용(최신순). 불러오지 못하면 빈 문자열 */
@@ -137,7 +165,7 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
 
     fun install(): JSONObject {
         activity.runOnUiThread {
-            if (ready == null) { check(); return@runOnUiThread }
+            if (ready?.isFile != true) { check(true); return@runOnUiThread }
             if (!activity.packageManager.canRequestPackageInstalls()) {
                 waitingForPermission = true
                 state("이 출처의 앱 설치 허용이 필요합니다")
@@ -157,13 +185,17 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
                     id = sessionId
                     installer.openSession(sessionId).use { session ->
                         file.inputStream().use { input -> session.openWrite("VideoExtractor.apk", 0, file.length()).use { output -> input.copyTo(output); session.fsync(output) } }
+                        val nonce = java.util.UUID.randomUUID().toString()
+                        installPrefs.edit().putInt("session", sessionId).putString("nonce", nonce).commit()
                         val result = Intent(activity, MainActivity::class.java).setAction(ACTION_INSTALL_STATUS)
+                            .setData(Uri.parse("vx-install://status/$nonce"))
                         val pending = PendingIntent.getActivity(activity, sessionId, result, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
                         state("설치 확인 대기 중")
                         session.commit(pending.intentSender)
                     }
                 } catch (error: Exception) {
                     id?.let { runCatching { installer.abandonSession(it) } }
+                    installPrefs.edit().clear().commit()
                     state("설치 실패: ${error.message}")
                 } finally { activity.runOnUiThread { installing = false } }
             }
@@ -172,13 +204,20 @@ class Updater(private val activity: MainActivity, private val changed: (JSONObje
     }
 
     fun onInstallStatus(intent: Intent) {
+        if (intent.action != ACTION_INSTALL_STATUS) return
+        val expected = installPrefs.getInt("session", -1)
+        val nonce = installPrefs.getString("nonce", null)
+        if (!InstallStatusGate.accepts(expected, intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1), nonce, intent.data?.lastPathSegment)) return
         val result = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         if (result == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             @Suppress("DEPRECATION")
             val confirm = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java) else intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-            if (confirm != null) activity.startActivity(confirm)
-        } else if (result == PackageInstaller.STATUS_SUCCESS) state("설치 완료")
-        else state(if (result == PackageInstaller.STATUS_FAILURE_ABORTED) "설치를 취소했습니다" else "설치 실패: ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)}")
+            if (confirm != null) runCatching { activity.startActivity(confirm) }.onFailure { state("설치 확인 화면을 열 수 없습니다") }
+        } else {
+            installPrefs.edit().clear().commit()
+            if (result == PackageInstaller.STATUS_SUCCESS) { cleanDownloads(null); ready = null; state("설치 완료") }
+            else state(if (result == PackageInstaller.STATUS_FAILURE_ABORTED) "설치를 취소했습니다" else "설치 실패: ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)}")
+        }
     }
 
     fun stop() { worker.shutdownNow() }
