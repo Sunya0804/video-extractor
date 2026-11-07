@@ -356,10 +356,7 @@ async function handleApi(req, res, url, remote = false) {
     }
     if (m === 'POST' && jm[2] === 'cancel') {
       job._cancelled = true;
-      if (!isFinishedJob(job)) { job._ctrl?.cancel(); job.status='cancelled'; finishJob(job); }
-
-      if (job.status === 'queued') { job.status = 'cancelled'; finishJob(job); }
-      else job._ctrl?.cancel();
+      if (!isFinishedJob(job)) { job._ctrl?.cancel(); job.status = 'cancelled'; finishJob(job); }
       return send(res, 200, { ok: true });
     }
     if (m === 'POST' && jm[2] === 'reveal') {
@@ -417,11 +414,11 @@ async function handleApi(req, res, url, remote = false) {
     }
     return send(res, 200, { ok: true });
   }
-  if (m === 'GET' && p === '/api/sites') return send(res, 200, { sites: sites.list() }, remote);
+  if (m === 'GET' && p === '/api/sites') return send(res, 200, { sites: sites.list() });
   const sm = p.match(/^\/api\/sites\/([^/]+)$/);
   if (m === 'DELETE' && sm) {
     if (!sites.forget(decodeURIComponent(sm[1]))) return send(res, 404, { error: '학습된 사이트가 아닙니다' });
-    emit('sites', { sites: sites.list() }, remote);
+    emit('sites', { sites: sites.list() });
     return send(res, 200, { ok: true });
   }
   if (m === 'POST' && p === '/api/shutdown') {
