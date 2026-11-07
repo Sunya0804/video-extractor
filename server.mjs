@@ -468,6 +468,8 @@ async function cleanupTmp() {
   try {
     for (const f of await fsp.readdir(TMP_DIR)) await fsp.rm(path.join(TMP_DIR, f), { force: true });
   } catch {}
+  // 강제 종료로 남은 다운로드 임시 폴더(lib/ytdlp.mjs). 이어 받기는 새 임시 폴더에서 다시 시작한다
+  await fsp.rm(path.join(DATA_DIR, 'downloads'), { recursive: true, force: true }).catch(() => {});
 }
 
 // 로그인 쿠키 파일은 다운로드에 다시 쓰여 실행 중에는 남겨 두고, 종료할 때 지운다(다음 시작 때 cleanupTmp도 지움)
