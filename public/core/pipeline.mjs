@@ -61,6 +61,7 @@ async function stageYtdlp(deps, a, setStage, errors) {
   const r = await deps.extract(a.url, { stage: 1, access });
   if (r.ok) {
     for (const it of r.items) it._access = access;
+    if (r.truncated) a.truncated = { shown: r.items.length, total: r.total || null };
     const drmOnly = r.items.every((i) => i.drm);
     setStage(1, 'success', drmOnly ? 'DRM으로 보호된 콘텐츠입니다' : `${r.items[0].extractor} · ${r.items.length}개 항목`);
     return r.items;

@@ -10,6 +10,11 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('정식 major.minor.patch 
 // 소스 저장소는 비공개로 둘 수 있게 배포 파일은 공개 releases 저장소에만 올린다(앱의 업데이트 확인 주소와 같음).
 const repo = 'Sunya0804/video-extractor-releases';
 const tag = `v${version}`;
+// 노트는 앱의 업데이트 창에 그대로 보이므로 사용자용 문장을 파일로 받는다: npm run release -- --notes 노트.md
+const notesFile = process.argv[process.argv.indexOf('--notes') + 1];
+if (!process.argv.includes('--notes') || !notesFile || !existsSync(notesFile) || !readFileSync(notesFile, 'utf8').trim()) {
+  throw new Error('릴리스 노트 파일이 필요합니다: npm run release -- --notes <노트.md>');
+}
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', ...options });
   if (result.error || result.status !== 0) throw new Error(`${command} 실패: ${result.error?.message || result.stderr || result.status}`);
@@ -24,9 +29,10 @@ if (metadata.errors || !metadata.data?.repository) throw new Error('태그 상�
 const releases = JSON.parse(run('gh', ['api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`]));
 if (metadata.data.repository.ref || releases.flat().some((r) => r.tag_name === tag)) throw new Error(`${tag} 태그 또는 릴리스가 이미 있습니다`);
 if (run('git', ['tag', '--list', tag]).trim()) throw new Error(`${tag} 로컬 태그가 이미 있습니다`);
+run(process.execPath, ['--test', 'tests/*.test.mjs'], { stdio: 'inherit' });
 run(process.execPath, ['android/dist.mjs'], { stdio: 'inherit' });
 // .cmd 셸 보간 없이 electron-builder의 JS CLI를 실행한다.
 run(process.execPath, ['node_modules/electron-builder/cli.js', '--win', '--publish', 'never'], { stdio: 'inherit' });
 const files = [`VideoExtractor-${version}.apk`, `VideoExtractor-Setup-${version}.exe`, `VideoExtractor-Setup-${version}.exe.blockmap`, 'latest.yml'].map((name) => path.join(root, 'dist', name));
 for (const file of files) if (!existsSync(file)) throw new Error(`빌드 파일이 없습니다: ${path.basename(file)}`);
-run('gh', ['release', 'create', tag, ...files, '--repo', repo, '--title', `Video Extractor ${version}`, '--generate-notes'], { stdio: 'inherit' });
+run('gh', ['release', 'create', tag, ...files, '--repo', repo, '--title', `Video Extractor ${version}`, '--latest', '--notes-file', notesFile], { stdio: 'inherit' });

@@ -73,8 +73,9 @@ function toItem(info, stage, fallbackUrl) {
   };
 }
 
+export const PLAYLIST_LIMIT = 300;
 export function extractArgs({ access, pluginArgs = [] }) {
-  return ['-J', '--flat-playlist', '--no-warnings', '--no-progress', '--playlist-end', '300', ...pluginArgs, ...accessArgs(access), '--'];
+  return ['-J', '--flat-playlist', '--no-warnings', '--no-progress', '--playlist-end', String(PLAYLIST_LIMIT), ...pluginArgs, ...accessArgs(access), '--'];
 }
 
 // yt-dlp -J 실행 결과 → 성공: { ok: true, items, title }, 실패: { ok: false, error, unsupported }
@@ -98,7 +99,9 @@ export function parseExtract({ code, stdout, stderr }, { stage, url }) {
       playlist: info.title || null,
     }));
     if (!items.length) return { ok: false, error: '재생목록이 비어 있습니다' };
-    return { ok: true, items, title: info.title };
+    // 전체 개수를 알면 그것으로, 모르면 상한에 닿았는지로 잘림을 판단한다
+    const total = Number(info.playlist_count) || null;
+    return { ok: true, items, title: info.title, truncated: total ? total > items.length : items.length >= PLAYLIST_LIMIT, total };
   }
   const item = toItem(info, stage, url);
   if (!item.formats.length && !item.drm && !info.url) return { ok: false, error: '내려받을 수 있는 형식을 찾지 못했습니다' };
@@ -137,19 +140,26 @@ export function downloadPrefs(s = {}) {
 }
 
 const CHANNEL = '%(channel,uploader|unknown).80B';
+// 주소에서 만든 짧은 구분값(FNV-1a). 2·3단계 항목은 yt-dlp ID가 index·master처럼 겹칠 수 있다
+export function urlTag(url) {
+  let h = 0x811c9dc5;
+  for (const c of String(url)) h = Math.imul(h ^ c.codePointAt(0), 0x01000193) >>> 0;
+  return h.toString(36).padStart(7, '0');
+}
 // ID를 늘 붙여, 채널·제목·날짜가 같은 다른 영상이 "이미 받음"으로 건너뛰어지지 않게 한다
-function outputName(fmt, title) {
+function outputName(fmt, title, url) {
   const t = title ? safeName(title) : '%(title).150B';
   const prefix = fmt?.nameStyle === 'channel' ? `${CHANNEL} - ` : fmt?.nameStyle === 'date' ? '%(upload_date>%Y-%m-%d|unknown)s_' : '';
-  return `${prefix}${t} [%(id)s].%(ext)s`;
+  return `${prefix}${t} [${title && url ? urlTag(url) : '%(id)s'}].%(ext)s`;
 }
 
 // 다운로드 인자(마지막이 '--', 그 뒤에 url을 붙인다).
 // title: 2·3단계 항목처럼 yt-dlp가 아는 제목이 의미 없을 때 쓸 파일 이름
 // fmt: formatArgs 값 + downloadPrefs 값. subLangs가 비어 있거나 MP3(음성)이면 자막을 받지 않는다
-export function downloadArgs({ fmt, outDir, title, fragments = 4, access, pluginArgs = [] }) {
+// url: title이 있을 때 파일 이름 구분값에 쓴다
+export function downloadArgs({ fmt, outDir, title, url, fragments = 4, access, pluginArgs = [] }) {
   const sep = outDir.includes('\\') ? '\\' : '/';
-  const name = (fmt?.channelDir ? CHANNEL + sep : '') + outputName(fmt, title);
+  const name = (fmt?.channelDir ? CHANNEL + sep : '') + outputName(fmt, title, url);
   const format = formatArgs(fmt);
   const subs = fmt?.subLangs && fmt.format !== 'audio'
     ? ['--write-subs', '--write-auto-subs', '--sub-langs', fmt.subLangs, ...(format.includes('--merge-output-format') ? ['--embed-subs'] : [])]
