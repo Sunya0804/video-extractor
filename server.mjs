@@ -414,11 +414,11 @@ async function handleApi(req, res, url, remote = false) {
     }
     return send(res, 200, { ok: true });
   }
-  if (m === 'GET' && p === '/api/sites') return send(res, 200, { sites: sites.list() });
+  if (m === 'GET' && p === '/api/sites') return send(res, 200, { sites: sites.list() }, remote);
   const sm = p.match(/^\/api\/sites\/([^/]+)$/);
   if (m === 'DELETE' && sm) {
     if (!sites.forget(decodeURIComponent(sm[1]))) return send(res, 404, { error: '학습된 사이트가 아닙니다' });
-    emit('sites', { sites: sites.list() });
+    emit('sites', { sites: sites.list() }, remote);
     return send(res, 200, { ok: true });
   }
   if (m === 'POST' && p === '/api/shutdown') {
