@@ -356,7 +356,10 @@ async function handleApi(req, res, url, remote = false) {
     }
     if (m === 'POST' && jm[2] === 'cancel') {
       job._cancelled = true;
-      if (!isFinishedJob(job)) { job._ctrl?.cancel(); job.status = 'cancelled'; finishJob(job); }
+      if (!isFinishedJob(job)) { job._ctrl?.cancel(); job.status='cancelled'; finishJob(job); }
+
+      if (job.status === 'queued') { job.status = 'cancelled'; finishJob(job); }
+      else job._ctrl?.cancel();
       return send(res, 200, { ok: true });
     }
     if (m === 'POST' && jm[2] === 'reveal') {

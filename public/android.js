@@ -175,7 +175,7 @@ export function createAndroid(receive, connection) {
       else {
         const access = await withLoginCookies(job._url, job._access || {});
         if (job._cancelled) throw new Error('cancelled');
-        const args = downloadArgs({ fmt: job._fmt, outDir: info.downloadDir, title: job._title, url: job._url, fragments: state.settings.concurrentFragments, access, pluginArgs: pluginArgs() });
+        const args = downloadArgs({ fmt: job._fmt, outDir: info.downloadDir, title: job._title, fragments: state.settings.concurrentFragments, access, pluginArgs: pluginArgs() });
         job._nativeStarted = true;
         r = await call('download', { jobId: job.id, url: job._url, args, title: job.title, format: job.format, job: storedJobs([job])[0] });
       }
