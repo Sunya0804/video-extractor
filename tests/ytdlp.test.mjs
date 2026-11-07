@@ -66,3 +66,20 @@ test('로그인이 필요하면 2·3단계를 건너뛰고 안내만 남긴다',
   assert.deepEqual(a.stages.map((s) => s.status), ['failed', 'skipped', 'skipped']);
   assert.match(a.error, /로그인용 브라우저 열기/);
 });
+
+test('2·3단계 제목 파일은 주소별 구분값으로 겹치지 않는다', () => {
+  const out = (url) => { const a = downloadArgs({ fmt: { format: 'best' }, outDir: '/d', title: 'Video', url, access: {} }); return a[a.indexOf('-o') + 1]; };
+  const a = out('https://a.example/x/index.m3u8'), b = out('https://b.example/y/index.m3u8');
+  assert.match(a, /^\/d\/Video \[[0-9a-z]{7}\]\.%\(ext\)s$/);
+  assert.notEqual(a, b);
+  assert.equal(a, out('https://a.example/x/index.m3u8'));
+});
+
+test('재생목록 상한에 닿으면 잘림을 알린다', () => {
+  const run = (entries, extra = {}) => parseExtract({ code: 0, stdout: JSON.stringify({ _type: 'playlist', title: 'P', entries, ...extra }) }, { stage: 1, url: 'u' });
+  const many = Array.from({ length: 300 }, (_, i) => ({ id: String(i), url: `https://y/${i}` }));
+  assert.equal(run(many).truncated, true);
+  assert.equal(run(many.slice(0, 5)).truncated, false);
+  assert.deepEqual([run(many, { playlist_count: 412 }).truncated, run(many, { playlist_count: 412 }).total], [true, 412]);
+  assert.equal(run(many, { playlist_count: 300 }).truncated, false);
+});
